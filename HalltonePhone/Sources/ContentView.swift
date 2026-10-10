@@ -13,7 +13,7 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("Macs") {
+                Section {
                     if model.allMacs.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
                             HStack(spacing: 8) {
@@ -30,7 +30,13 @@ struct ContentView: View {
                         Button { model.select(mac) } label: {
                             HStack {
                                 Image(systemName: mac.kind == .bonjour ? "desktopcomputer" : "network")
-                                Text(mac.name)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(mac.name)
+                                    if mac.away {
+                                        Text("Not on this network · reachable over a VPN")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
                                 Spacer()
                                 if model.selected == mac { Image(systemName: "checkmark").foregroundStyle(.tint) }
                             }
@@ -41,10 +47,17 @@ struct ContentView: View {
                             Button("Forget code") { model.forgetPairing(mac) }.tint(.orange)
                         }
                     }
+                } header: {
+                    Text("Macs")
+                } footer: {
+                    Text("Away from home? Connect your iPhone to your home network with a VPN (for example the WireGuard VPN built into UniFi, or Tailscale) and Halltone reaches your Mac over cellular, with a bit more delay.")
                 }
                 Section("Status") {
                     LabeledContent("State", value: stateText)
                     if model.isActive {
+                        if model.stats.onCellular {
+                            LabeledContent("Network", value: "Cellular · larger buffer")
+                        }
                         LabeledContent("Buffer", value: "\(model.stats.bufferMs) / \(model.stats.targetMs) ms")
                         LabeledContent("Packet loss", value: String(format: "%.1f%%", model.stats.lossPercent))
                         LabeledContent("Est. latency", value: "~\(model.stats.estimatedLatencyMs + 20) ms + Bluetooth")

@@ -57,6 +57,9 @@ struct MacEntry: Identifiable, Hashable, Codable {
     /// both Ethernet and Wi-Fi is reachable at two addresses; connecting to the wired one avoids a
     /// second wireless hop and the Mac's Wi-Fi/Bluetooth radio sharing. Not persisted.
     var preferredHost: String?
+    /// Known from an earlier visit but not visible on the current network (e.g. away from home,
+    /// reaching the Mac over a VPN at its remembered address). Not persisted.
+    var away = false
 
     static func bonjour(name: String, preferredHost: String? = nil, port: UInt16? = nil) -> MacEntry {
         var e = MacEntry(id: "bonjour:\(name)", name: name, kind: .bonjour)
@@ -95,6 +98,8 @@ final class AppModel: ObservableObject {
         static let autoConnect = "autoConnect"
         static let lastMac = "lastMac"
         static let latencyMode = "latencyMode"
+        /// [Mac id: "host:port"]: last advertised address of each Bonjour Mac.
+        static let knownAddresses = "knownAddresses"
     }
 
     @Published private(set) var discovered: [MacEntry] = []
@@ -116,7 +121,25 @@ final class AppModel: ObservableObject {
     @Published var pairingError: String?
     @Published var errorText: String?
 
-    var allMacs: [MacEntry] { discovered + manual }
+    var allMacs: [MacEntry] { discovered + rememberedAway + manual }
+
+    /// Bonjour Macs seen before (with an address) that aren't on the current network.
+    private var rememberedAway: [MacEntry] {
+        knownAddresses.compactMap { id, hostPort -> MacEntry? in
+            guard id.hasPrefix("bonjour:"), !discovered.contains(where: { $0.id == id }),
+                  let (host, port) = Self.splitHostPort(hostPort) else { return nil }
+            var e = MacEntry.bonjour(name: String(id.dropFirst("bonjour:".count)), preferredHost: host, port: port)
+            e.away = true
+            return e
+        }.sorted { $0.name < $1.name }
+    }
+
+    @Published private var knownAddresses: [String: String] = [:]
+
+    private static func splitHostPort(_ s: String) -> (String, UInt16)? {
+        guard let i = s.lastIndex(of: ":"), let p = UInt16(s[s.index(after: i)...]) else { return nil }
+        return (String(s[..<i]), p)
+    }
     var isActive: Bool { state.isActive }
 
     let playback = PlaybackEngine()
@@ -131,6 +154,7 @@ final class AppModel: ObservableObject {
     init() {
         receiver = Receiver(sink: playback)
         autoConnect = defaults.object(forKey: Key.autoConnect) as? Bool ?? true
+        knownAddresses = defaults.dictionary(forKey: Key.knownAddresses) as? [String: String] ?? [:]
         latencyMode = defaults.string(forKey: Key.latencyMode).flatMap(LatencyMode.init(rawValue:)) ?? .balanced
         receiver.latencyMode = latencyMode
         if let data = defaults.data(forKey: Key.manual), let list = try? JSONDecoder().decode([MacEntry].self, from: data) {
@@ -163,14 +187,24 @@ final class AppModel: ObservableObject {
         setupRemoteCommands()
         startBrowsing()
         if autoConnect, let last = defaults.string(forKey: Key.lastMac) {
-            if let m = manual.first(where: { $0.id == last }) { connect(m) } else { autoConnectPending = last }
+            if let m = manual.first(where: { $0.id == last }) {
+                connect(m)
+            } else if let m = rememberedAway.first(where: { $0.id == last }) {
+                // Known address: connect right away (works at home and over a VPN); no need to
+                // wait for Bonjour, which doesn't cross VPNs.
+                connect(m)
+            } else {
+                autoConnectPending = last
+            }
         }
     }
 
     // MARK: - Connect / disconnect
 
     func connect(_ requested: MacEntry) {
-        let mac = discovered.first(where: { $0.id == requested.id }) ?? requested
+        let mac = discovered.first(where: { $0.id == requested.id })
+            ?? rememberedAway.first(where: { $0.id == requested.id })
+            ?? requested
         pairingError = nil
         guard let code = Keychain.pairingCode(for: mac.pairingKey) ?? Self.debugPairingCode() else {
             pairingInput = ""
@@ -215,7 +249,12 @@ final class AppModel: ObservableObject {
         connect(mac, code: code)
     }
 
+    private var connectedID: String?
+    private var connectedHost: String?
+
     private func connect(_ mac: MacEntry, code: UInt32) {
+        connectedID = mac.id
+        connectedHost = mac.preferredHost
         diag("connect → \(mac.name) via \(mac.preferredHost ?? (mac.kind == .manual ? mac.host : "Bonjour"))")
         selected = mac
         defaults.set(mac.id, forKey: Key.lastMac)
@@ -315,7 +354,20 @@ final class AppModel: ObservableObject {
             diag("discovered \(e.name) at \(e.preferredHost ?? "(no address advertised)")")
         }
         discovered = entries
-        if selected == nil { selected = discovered.first ?? manual.first }
+        var known = knownAddresses
+        for e in entries { if let h = e.preferredHost { known[e.id] = "\(h):\(e.port)" } }
+        if known != knownAddresses {
+            knownAddresses = known
+            defaults.set(known, forKey: Key.knownAddresses)
+        }
+        if selected == nil { selected = discovered.first ?? rememberedAway.first ?? manual.first }
+        // Connected to a remembered address that the Mac no longer advertises (e.g. its DHCP
+        // address changed): move to the current one.
+        if isActive, let host = connectedHost, let current = entries.first(where: { $0.id == connectedID }),
+           let fresh = current.preferredHost, fresh != host {
+            diag("\(current.name) moved \(host) → \(fresh); reconnecting")
+            connect(current)
+        }
         if let pending = autoConnectPending, let m = discovered.first(where: { $0.id == pending }) {
             autoConnectPending = nil
             connect(m)

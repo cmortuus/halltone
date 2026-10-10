@@ -393,3 +393,21 @@ extension JitterBuffer.Config {
         return c
     }
 }
+
+extension JitterBuffer.Config {
+    /// Used automatically when the phone is on cellular (e.g. reaching home over a VPN): cellular
+    /// links have 50-150 ms of round-trip jitter and occasional multi-hundred-ms stalls.
+    public static func cellular(frameSamples: Int) -> JitterBuffer.Config {
+        var c = JitterBuffer.Config(frameSamples: frameSamples)
+        c.initialTargetMs = 400
+        c.minTargetMs = 300
+        c.maxTargetMs = 2000
+        c.gapMarginMs = 150
+        c.gapHalfLifeSeconds = 120
+        c.lowerAfterSeconds = 30
+        c.catchUpMarginMs = 400
+        c.stallResetSeconds = 6
+        return c
+    }
+}
+

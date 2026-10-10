@@ -202,6 +202,14 @@ extension JitterSim.Result: CustomStringConvertible {
         #expect(r.target >= 250)
     }
 
+    @Test func cellularPresetRidesOutHeavyJitter() {
+        // Cellular-like: up to 300 ms random delay per packet, 2% loss.
+        let r = JitterSim(config: .cellular(frameSamples: 480), loss: 0.02, jitterMs: 300, seconds: 60, seed: 11).run()
+        print("cellular: \(r)")
+        #expect(r.stats.underruns <= 2, "underruns \(r.stats.underruns)")
+        #expect(r.stats.targetMs >= 300 && r.stats.targetMs <= 2000)
+    }
+
     @Test func modeSwitchReprimes() {
         let jb = JitterBuffer(config: cfg)
         for i in 0..<20 { jb.push(session: 1, samplePos: UInt64(i * 480), payload: Data(), now: Double(i) * 0.01) }

@@ -40,6 +40,8 @@ public final class Receiver {
         public var callbackFrames = 0
         /// Largest recent gap between packet arrivals (decaying), in ms.
         public var arrivalGapMs = 0
+        /// The phone is on cellular (no Wi-Fi), using the larger cellular buffer.
+        public var onCellular = false
         /// From the Mac's STATUS: whether headphone/lock-screen controls work. nil = unknown
         /// (older Mac app, or no STATUS yet).
         public var macControlsAvailable: Bool?
@@ -58,14 +60,21 @@ public final class Receiver {
     public private(set) var stats = Stats()
 
     /// Latency/robustness trade-off for the jitter buffer. Applies immediately (re-primes).
+    /// While the phone is on cellular a larger cellular buffer is used regardless.
     public var latencyMode: LatencyMode = .balanced {
-        didSet {
-            let mode = latencyMode
-            queue.async { [self] in
-                guard let pump else { return }
-                pump.apply(.preset(mode, frameSamples: pump.jitter.frameSamples))
-            }
-        }
+        didSet { queue.async { [self] in applyEffectiveConfig() } }
+    }
+
+    /// True while the phone has no Wi-Fi or wired path (reaching the Mac over cellular/VPN).
+    private var onCellular = false
+
+    private func effectiveConfig(frameSamples: Int) -> JitterBuffer.Config {
+        onCellular ? .cellular(frameSamples: frameSamples) : .preset(latencyMode, frameSamples: frameSamples)
+    }
+
+    private func applyEffectiveConfig() {
+        guard let pump else { return }
+        pump.apply(effectiveConfig(frameSamples: pump.jitter.frameSamples))
     }
 
     private let sink: PlaybackSink
@@ -212,7 +221,7 @@ public final class Receiver {
                     state = .failed("codec \(codec) not supported on this build")
                     return
                 }
-                let jb = JitterBuffer(config: .preset(latencyMode, frameSamples: Int(frameSamples)))
+                let jb = JitterBuffer(config: effectiveConfig(frameSamples: Int(frameSamples)))
                 let p = DecodePump(jitter: jb, decoder: decoder, sink: sink)
                 p.onFrameScheduled = onFrameScheduled
                 p.start()
@@ -254,7 +263,8 @@ public final class Receiver {
         let n = DispatchSource.makeTimerSource(queue: queue)
         n.schedule(deadline: .now() + 0.02, repeating: 0.02, leeway: .milliseconds(5))
         n.setEventHandler { [weak self] in
-            guard let self, case .subscribed = self.state, let c = self.connection else { return }
+            // Keeps a dozing Wi-Fi radio awake; pointless (and costs data) on cellular.
+            guard let self, !self.onCellular, case .subscribed = self.state, let c = self.connection else { return }
             c.send(content: self.nudgePacket, completion: .idempotent)
         }
         n.resume()
@@ -271,6 +281,15 @@ public final class Receiver {
             let m = NWPathMonitor()
             m.pathUpdateHandler = { [weak self] path in
                 guard let self else { return }
+                let types = path.availableInterfaces.map(\.type)
+                let cellular = !types.contains(.wifi) && !types.contains(.wiredEthernet) && types.contains(.cellular)
+                if cellular != self.onCellular {
+                    self.onCellular = cellular
+                    self.stats.onCellular = cellular
+                    log.notice("now on \(cellular ? "cellular" : "Wi-Fi", privacy: .public)")
+                    self.applyEffectiveConfig()
+                    self.publish()
+                }
                 let names = Set(path.availableInterfaces.map { $0.name })
                 if self.pathInterfaces != names, !self.pathInterfaces.isEmpty, self.state.isActive {
                     log.info("network path changed: \(names.sorted().joined(separator: ","), privacy: .public)")

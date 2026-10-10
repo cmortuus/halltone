@@ -25,6 +25,22 @@ your pocket doesn't.
 
 Both devices need to be on the same local network. See [Setup notes](#setup-notes) for AirPods tips.
 
+## Listening away from home (cellular)
+
+Halltone never opens your Mac to the internet: its audio stream is unencrypted and the pairing code
+is short. To listen over cellular, connect the iPhone to your home network with a VPN, then use
+Halltone as usual:
+
+- **UniFi**: enable the built-in WireGuard VPN server (Settings → VPN → VPN Server), add the
+  profile to the WireGuard app on your iPhone, and turn on "On-Demand" for cellular.
+- **Tailscale**: install it on the Mac and the iPhone. If the phone can't reach the Mac's LAN
+  address, add the Mac's Tailscale address with **+** in the app.
+
+The phone remembers each Mac's address from home, so it connects over the VPN even though Bonjour
+discovery doesn't work there. On cellular it automatically switches to a larger buffer (about
+0.3–2 s, adapting to the connection) and stops its Wi‑Fi keep-awake packets. Data use at the
+default Opus quality is about 60 MB per hour.
+
 ## How it works
 
 ```
