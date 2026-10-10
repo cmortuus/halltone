@@ -109,6 +109,10 @@ final class AppModel: ObservableObject {
             manual = list
         }
         receiver.onState = { [weak self] st in Task { @MainActor in self?.handleState(st) } }
+        receiver.onMacStatus = { [weak self] flags in
+            guard flags.contains(.lastControlFailed) else { return }
+            Task { @MainActor in self?.controlFailed() }
+        }
         receiver.onStats = { [weak self] s in
             Task { @MainActor in
                 self?.stats = s
@@ -401,6 +405,30 @@ final class AppModel: ObservableObject {
         receiver.sendControl(cmd)
         return .success
     }
+
+    /// A headphone/lock-screen press reached the Mac but it can't press keys yet. The user is
+    /// probably away from both screens, so say so where they'll look: the lock screen.
+    @Published private(set) var showControlsHelpBanner = false
+    private var nowPlayingRestore: Task<Void, Never>?
+
+    private func controlFailed() {
+        diag("control failed on Mac: headphone controls are off there")
+        showControlsHelpBanner = true
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = [
+            MPMediaItemPropertyTitle: "Pause isn't set up yet",
+            MPMediaItemPropertyArtist: "Turn on Headphone Controls in Halltone on your Mac",
+            MPNowPlayingInfoPropertyIsLiveStream: true,
+            MPNowPlayingInfoPropertyPlaybackRate: 1.0,
+        ]
+        nowPlayingRestore?.cancel()
+        nowPlayingRestore = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(10))
+            guard !Task.isCancelled, let self else { return }
+            self.updateNowPlaying(macName: self.stats.macName.isEmpty ? (self.selected?.name ?? "Mac") : self.stats.macName)
+        }
+    }
+
+    func dismissControlsHelpBanner() { showControlsHelpBanner = false }
 
     private func updateNowPlaying(macName: String) {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = [

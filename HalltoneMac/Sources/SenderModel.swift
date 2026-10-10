@@ -23,7 +23,17 @@ final class SenderModel: ObservableObject {
     /// app doesn't re-render every second.
     @Published private(set) var liveStats = Sender.Stats()
     @Published private(set) var startError: String?
-    var panelVisible = false { didSet { if panelVisible { liveStats = latest } } }
+    /// Whether headphone/lock-screen controls work (Accessibility permission granted).
+    @Published private(set) var controlsEnabled = MediaKeys.isTrusted
+    private var permissionTimer: Timer?
+    var panelVisible = false {
+        didSet {
+            if panelVisible {
+                liveStats = latest
+                refreshControlsEnabled()
+            }
+        }
+    }
     private var latest = Sender.Stats()
     @Published var muteWhileStreaming: Bool {
         didSet { defaults.set(muteWhileStreaming, forKey: Key.mute); restart() }
@@ -80,8 +90,10 @@ final class SenderModel: ObservableObject {
             }
         }
         s.onControl = { cmd in
-            DispatchQueue.main.async { MediaKeys.send(cmd) }
+            // Called on the sender's receive thread; posting media keys is fine off-main.
+            MediaKeys.send(cmd)
         }
+        s.controlsAvailable = { MediaKeys.isTrusted }
         do {
             try s.start()
             startError = nil
@@ -96,6 +108,25 @@ final class SenderModel: ObservableObject {
         sender?.stop()
         sender = nil
         start()
+    }
+
+    /// "Turn On…" in the menu: explain, open System Settings, then watch for the switch to flip.
+    func enableHeadphoneControls() {
+        MediaKeys.requestPermission()
+        permissionTimer?.invalidate()
+        var checks = 0
+        permissionTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] t in
+            MainActor.assumeIsolated {
+                checks += 1
+                self?.refreshControlsEnabled()
+                if self?.controlsEnabled == true || checks > 300 { t.invalidate() }
+            }
+        }
+    }
+
+    func refreshControlsEnabled() {
+        let now = MediaKeys.isTrusted
+        if now != controlsEnabled { controlsEnabled = now }
     }
 
     func regeneratePairingCode() {

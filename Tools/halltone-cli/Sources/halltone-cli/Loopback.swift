@@ -29,6 +29,7 @@ func runSend(port: UInt16, sourceKind: String, codec: CodecID, mute: Bool, pairi
         if line != lastLine { print(line); fflush(stdout); lastLine = line }
     }
     sender.onPacketSent = { pos, ns in latencyWriter?.write(pos, ns) }
+    sender.onControl = { cmd in print("[send] control: \(cmd) (the CLI can't press media keys)"); return false }
     try sender.start()
     var swapTimer: Timer?
     if let swapEvery {
@@ -68,6 +69,14 @@ func runReceive(target: String, pairingCode: UInt32, name: String, wav: URL?, se
         fflush(stdout)
     }
     receiver.onFrameScheduled = { pos, ns in latencyWriter?.write(pos, ns) }
+    var lastFlags: StatusFlags?
+    receiver.onMacStatus = { flags in
+        if flags != lastFlags {
+            lastFlags = flags
+            print("[recv] mac status: headphone controls \(flags.contains(.controlsAvailable) ? "ON" : "OFF")\(flags.contains(.lastControlFailed) ? ", last control failed" : "")")
+            fflush(stdout)
+        }
+    }
     receiver.connect(to: endpoint, pairingCode: pairingCode, deviceName: name)
     if let seconds {
         RunLoop.main.run(until: Date().addingTimeInterval(seconds))

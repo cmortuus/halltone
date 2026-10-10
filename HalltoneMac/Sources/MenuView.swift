@@ -26,6 +26,21 @@ struct MenuView: View {
                 }
             }
             Divider()
+            HStack(alignment: .top) {
+                Image(systemName: "airpods")
+                    .foregroundStyle(model.controlsEnabled ? .green : .secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Headphone controls: \(model.controlsEnabled ? "On" : "Off")")
+                    Text(model.controlsEnabled
+                         ? "Tap your AirPods to pause or skip here."
+                         : "Lets a tap on your AirPods pause or skip on this Mac.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if !model.controlsEnabled {
+                    Button("Turn On…") { model.enableHeadphoneControls() }
+                }
+            }
             Toggle("Mute Mac speakers while streaming", isOn: $model.muteWhileStreaming)
             Picker("Codec", selection: $model.codec) {
                 Text("Opus (128 kbps)").tag(CodecID.opus)

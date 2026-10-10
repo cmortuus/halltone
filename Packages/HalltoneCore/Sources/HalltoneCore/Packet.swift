@@ -10,6 +10,9 @@ public enum MessageType: UInt8 {
     case bye = 0x03
     case subscribeAck = 0x04
     case subscribeNak = 0x05
+    /// Mac → phone. Sent after SUBSCRIBE_ACK, whenever a flag changes, every few seconds, and
+    /// right after a CONTROL that could not be carried out. Older receivers ignore it.
+    case status = 0x06
     case audio = 0x10
     case control = 0x20
 }
@@ -23,6 +26,16 @@ public enum ControlCommand: UInt8 {
     case playPause = 1
     case next = 2
     case previous = 3
+}
+
+/// Bits of the STATUS message's `flags` byte.
+public struct StatusFlags: OptionSet, Equatable {
+    public let rawValue: UInt8
+    public init(rawValue: UInt8) { self.rawValue = rawValue }
+    /// The Mac can carry out CONTROL commands (play/pause/next/previous).
+    public static let controlsAvailable = StatusFlags(rawValue: 1 << 0)
+    /// The most recent CONTROL could not be carried out (permission missing).
+    public static let lastControlFailed = StatusFlags(rawValue: 1 << 1)
 }
 
 public enum NakReason: UInt8 {
@@ -46,6 +59,7 @@ public enum Message: Equatable {
     case bye
     case subscribeAck(codec: CodecID, sampleRate: UInt32, channels: UInt8, frameSamples: UInt16, macName: String)
     case subscribeNak(reason: UInt8)
+    case status(flags: StatusFlags)
     case audio(samplePos: UInt64, codec: CodecID, payload: Data)
     case control(command: ControlCommand)
 
@@ -56,6 +70,7 @@ public enum Message: Equatable {
         case .bye: return .bye
         case .subscribeAck: return .subscribeAck
         case .subscribeNak: return .subscribeNak
+        case .status: return .status
         case .audio: return .audio
         case .control: return .control
         }
@@ -97,6 +112,8 @@ public struct Packet: Equatable {
             w.u8(codec.rawValue); w.u32(rate); w.u8(ch); w.u16(frame); w.shortString(name)
         case .subscribeNak(let reason):
             w.u8(reason)
+        case .status(let flags):
+            w.u8(flags.rawValue)
         case .audio(let pos, let codec, let payload):
             w.u64(pos); w.u8(codec.rawValue); w.u16(UInt16(min(payload.count, Int(UInt16.max)))); w.bytes(payload)
         case .control(let cmd):
@@ -130,6 +147,9 @@ public struct Packet: Equatable {
         case .subscribeNak:
             guard let reason = r.u8() else { return nil }
             message = .subscribeNak(reason: reason)
+        case .status:
+            guard let flags = r.u8() else { return nil }
+            message = .status(flags: StatusFlags(rawValue: flags))
         case .audio:
             guard let pos = r.u64(), let rawCodec = r.u8(), let codec = CodecID(rawValue: rawCodec),
                   let len = r.u16(), let payload = r.bytes(Int(len)) else { return nil }

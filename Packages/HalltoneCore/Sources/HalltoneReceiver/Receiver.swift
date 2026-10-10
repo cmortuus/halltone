@@ -38,6 +38,9 @@ public final class Receiver {
         public var estimatedLatencyMs = 0
         /// Largest render callback seen, in frames.
         public var callbackFrames = 0
+        /// From the Mac's STATUS: whether headphone/lock-screen controls work. nil = unknown
+        /// (older Mac app, or no STATUS yet).
+        public var macControlsAvailable: Bool?
         public init() {}
     }
 
@@ -45,6 +48,8 @@ public final class Receiver {
     public var onStats: ((Stats) -> Void)?
     /// Test hook: (samplePos, uptime ns at which that frame reaches the sink), every 4800 samples.
     public var onFrameScheduled: ((UInt64, UInt64) -> Void)?
+    /// Called (on the receiver queue) for every STATUS from the Mac.
+    public var onMacStatus: ((StatusFlags) -> Void)?
     public private(set) var state: State = .idle {
         didSet { if state != oldValue { stats.state = state; onState?(state) } }
     }
@@ -210,6 +215,10 @@ public final class Receiver {
             bytesThisSecond += bytes
             if case .reconnecting = state { state = .subscribed(macName: stats.macName) }
             pump?.push(session: packet.header.session, samplePos: samplePos, payload: payload)
+        case .status(let flags):
+            let available = flags.contains(.controlsAvailable)
+            if stats.macControlsAvailable != available { stats.macControlsAvailable = available; publish() }
+            onMacStatus?(flags)
         case .bye:
             log.notice("sender said bye")
             if state.isActive { state = .reconnecting; reconnectingSince = now() }

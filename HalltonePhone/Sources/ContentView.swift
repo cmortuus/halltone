@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var newHost = ""
     @State private var newPort = "47800"
     @State private var showAcknowledgements = false
+    @State private var showControlsHelp = false
 
     var body: some View {
         NavigationStack {
@@ -51,6 +52,18 @@ struct ContentView: View {
                         LabeledContent("Underruns", value: "\(model.stats.underruns)")
                     }
                 }
+                if model.isActive, let available = model.stats.macControlsAvailable {
+                    Section("Headphone controls") {
+                        if available {
+                            Label("Tap your AirPods to pause or skip on your Mac", systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                        } else {
+                            Label("Tapping your AirPods can't pause your Mac yet", systemImage: "exclamationmark.circle.fill")
+                                .foregroundStyle(.orange)
+                            Button("How to turn it on") { showControlsHelp = true }
+                        }
+                    }
+                }
                 Section {
                     Toggle("Auto-connect on launch", isOn: $model.autoConnect)
                 }
@@ -86,6 +99,13 @@ struct ContentView: View {
                 .background(.bar)
             }
             .sheet(isPresented: $showAdd) { addSheet }
+            .sheet(isPresented: $showControlsHelp) { ControlsHelpView(macName: model.stats.macName) }
+            .alert("Pause isn't set up yet", isPresented: Binding(get: { model.showControlsHelpBanner }, set: { if !$0 { model.dismissControlsHelpBanner() } })) {
+                Button("Show me how") { model.dismissControlsHelpBanner(); showControlsHelp = true }
+                Button("Later", role: .cancel) { model.dismissControlsHelpBanner() }
+            } message: {
+                Text("Your Mac needs one setting before your AirPods can pause or skip it.")
+            }
             .sheet(isPresented: $showAcknowledgements) {
                 NavigationStack {
                     ScrollView {

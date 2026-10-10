@@ -45,7 +45,12 @@ public final class Sender {
     }
 
     public var onStats: ((Stats) -> Void)?
-    public var onControl: ((ControlCommand) -> Void)?
+    /// Carries out a CONTROL from a phone; returns false if it couldn't (e.g. permission missing).
+    public var onControl: ((ControlCommand) -> Bool)?
+    /// Whether CONTROL commands can currently be carried out. nil: don't send STATUS at all.
+    public var controlsAvailable: (() -> Bool)?
+    private var lastControlsFlag: Bool?
+    private var statusTicks = 0
 
     public private(set) var stats = Stats()
     public let config: Config
@@ -192,6 +197,7 @@ public final class Sender {
             }
             lock.unlock()
             sendControl(ack, to: address)
+            sendStatus(to: [address])
             startCaptureIfNeeded()
             queue.async { self.publish() }
         case .keepalive(_, let loss, let buf):
@@ -203,7 +209,8 @@ public final class Sender {
         case .bye:
             remove(key: key, reason: "bye")
         case .control(let cmd):
-            onControl?(cmd)
+            let ok = onControl?(cmd) ?? false
+            if !ok { sendStatus(to: [address], lastControlFailed: true) }
         default:
             break
         }
@@ -231,7 +238,29 @@ public final class Sender {
         }
     }
 
+    /// STATUS to the given subscribers (or all). Cheap; safe to call from any queue.
+    private func sendStatus(to addresses: [sockaddr_storage]? = nil, lastControlFailed: Bool = false) {
+        guard let available = controlsAvailable else { return }
+        var flags: StatusFlags = []
+        if available() { flags.insert(.controlsAvailable) }
+        if lastControlFailed { flags.insert(.lastControlFailed) }
+        let targetsNow: [sockaddr_storage]
+        if let addresses { targetsNow = addresses } else { lock.lock(); targetsNow = targets; lock.unlock() }
+        for a in targetsNow { sendControl(.status(flags: flags), to: a) }
+    }
+
     private func tick() {
+        // STATUS: immediately when the permission flips, otherwise every 5 s (UDP may drop it).
+        if let available = controlsAvailable?() {
+            statusTicks += 1
+            if available != lastControlsFlag || statusTicks % 5 == 0 {
+                if available != lastControlsFlag, lastControlsFlag != nil {
+                    log.notice("controls available: \(available)")
+                }
+                lastControlsFlag = available
+                sendStatus()
+            }
+        }
         let cutoff = Date().addingTimeInterval(-Constants.subscriberTimeout)
         lock.lock()
         let expired = subscribers.filter { $0.value.lastSeen < cutoff }

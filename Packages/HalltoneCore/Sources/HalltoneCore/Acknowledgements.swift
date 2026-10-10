@@ -4,6 +4,10 @@ import Foundation
 /// and license to be reproduced in binary distributions.
 public enum Acknowledgements {
     public static let text = """
+    Halltone is free software, licensed under the GNU General Public License, version 3 or (at
+    your option) any later version. It comes with ABSOLUTELY NO WARRANTY. Source code and the
+    full license: https://github.com/cmortuus/halltone
+
     Halltone includes the following third-party software.
 
     ── Opus audio codec (libopus 1.5.2) ── https://opus-codec.org

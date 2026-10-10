@@ -189,3 +189,18 @@ Testing tips:
   auto-connect). `xcrun simctl io <udid> screenshot out.png` shows the status screen.
 - Device install: connect the iPhone (USB or paired over Wi‑Fi), select it in Xcode and run the
   HalltonePhone scheme, or `xcodebuild -scheme HalltonePhone -destination 'platform=iOS,name=<phone>'`.
+
+## License
+
+Copyright (C) 2026 the Halltone authors.
+
+Halltone is free software: you can redistribute it and/or modify it under the terms of the
+[GNU General Public License](LICENSE) as published by the Free Software Foundation, either
+version 3 of the License, or (at your option) any later version. It is distributed in the hope
+that it will be useful, but WITHOUT ANY WARRANTY; see the license for details.
+
+Bundled third-party code keeps its own license: libopus (BSD-3-Clause), in
+`Packages/HalltoneCore/Sources/COpus/opus/COPYING`.
+
+Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
+

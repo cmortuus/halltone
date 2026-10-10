@@ -10,6 +10,8 @@ import Foundation
             .bye,
             .subscribeAck(codec: .pcm16, sampleRate: 48000, channels: 2, frameSamples: 240, macName: "Mac Studio"),
             .subscribeNak(reason: 1),
+            .status(flags: [.controlsAvailable]),
+            .status(flags: [.lastControlFailed]),
             .audio(samplePos: 1 << 40, codec: .pcm16, payload: Data((0..<960).map { UInt8($0 & 0xff) })),
             .control(command: .next),
         ]
