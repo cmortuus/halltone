@@ -13,6 +13,9 @@ public enum MessageType: UInt8 {
     /// Mac → phone. Sent after SUBSCRIBE_ACK, whenever a flag changes, every few seconds, and
     /// right after a CONTROL that could not be carried out. Older receivers ignore it.
     case status = 0x06
+    /// Phone → Mac, empty, every ~20 ms while playing. Frequent uplink traffic keeps the phone's
+    /// Wi-Fi radio out of power save, so audio arrives steadily instead of in bursts. Ignored.
+    case nudge = 0x07
     case audio = 0x10
     case control = 0x20
 }
@@ -60,6 +63,7 @@ public enum Message: Equatable {
     case subscribeAck(codec: CodecID, sampleRate: UInt32, channels: UInt8, frameSamples: UInt16, macName: String)
     case subscribeNak(reason: UInt8)
     case status(flags: StatusFlags)
+    case nudge
     case audio(samplePos: UInt64, codec: CodecID, payload: Data)
     case control(command: ControlCommand)
 
@@ -71,6 +75,7 @@ public enum Message: Equatable {
         case .subscribeAck: return .subscribeAck
         case .subscribeNak: return .subscribeNak
         case .status: return .status
+        case .nudge: return .nudge
         case .audio: return .audio
         case .control: return .control
         }
@@ -114,6 +119,8 @@ public struct Packet: Equatable {
             w.u8(reason)
         case .status(let flags):
             w.u8(flags.rawValue)
+        case .nudge:
+            break
         case .audio(let pos, let codec, let payload):
             w.u64(pos); w.u8(codec.rawValue); w.u16(UInt16(min(payload.count, Int(UInt16.max)))); w.bytes(payload)
         case .control(let cmd):
@@ -150,6 +157,8 @@ public struct Packet: Equatable {
         case .status:
             guard let flags = r.u8() else { return nil }
             message = .status(flags: StatusFlags(rawValue: flags))
+        case .nudge:
+            message = .nudge
         case .audio:
             guard let pos = r.u64(), let rawCodec = r.u8(), let codec = CodecID(rawValue: rawCodec),
                   let len = r.u16(), let payload = r.bytes(Int(len)) else { return nil }

@@ -12,6 +12,7 @@ import Foundation
             .subscribeNak(reason: 1),
             .status(flags: [.controlsAvailable]),
             .status(flags: [.lastControlFailed]),
+            .nudge,
             .audio(samplePos: 1 << 40, codec: .pcm16, payload: Data((0..<960).map { UInt8($0 & 0xff) })),
             .control(command: .next),
         ]

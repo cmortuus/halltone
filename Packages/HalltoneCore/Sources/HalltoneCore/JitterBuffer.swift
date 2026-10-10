@@ -12,7 +12,19 @@ public final class JitterBuffer {
         public var sampleRate: Double = Constants.sampleRate
         public var initialTargetMs: Double = 60
         public var minTargetMs: Double = 30
-        public var maxTargetMs: Double = 250
+        /// Phones in Wi-Fi power save can receive in bursts with 200–300 ms holes; the ceiling
+        /// has to cover those or every hole becomes an audible dropout.
+        public var maxTargetMs: Double = 400
+        /// The target never drops below (largest recent gap between packet arrivals + this).
+        public var gapMarginMs: Double = 30
+        /// How quickly the remembered largest gap fades (half-life).
+        public var gapHalfLifeSeconds: Double = 30
+        /// Fast catch-up: if depth is this far above target (instantaneous) and half that on
+        /// average, drop a frame as often as every `catchUpInterval`.
+        public var catchUpMarginMs: Double = 80
+        public var catchUpInterval: TimeInterval = 0.05
+        /// A network gap longer than this resets and re-primes; shorter gaps just pause playout.
+        public var stallResetSeconds: Double = 1.0
         /// Raise target by this much on an underrun.
         public var raiseStepMs: Double = 20
         /// Lower target by this much after `lowerAfterSeconds` without an underrun.
@@ -84,6 +96,13 @@ public final class JitterBuffer {
     private var startedTime: TimeInterval = 0
     private var lateWindowStart: TimeInterval = 0
     private var lateInWindow = 0
+    private var lastArrival: TimeInterval?
+    private var gapPeakMs: Double = 0
+    private var lastGapUpdate: TimeInterval = 0
+    private var lastFastDrop: TimeInterval = 0
+
+    /// Largest recent gap between packet arrivals (decaying), in ms.
+    public var recentGapMs: Double { gapPeakMs }
 
     public init(config: Config) {
         self.config = config
@@ -99,6 +118,7 @@ public final class JitterBuffer {
         }
         if self.session == nil { self.session = session; startedTime = now; lastLowerTime = now }
         stats.received += 1
+        noteArrival(now: now)
 
         let jump = UInt64(config.resetJumpSeconds * config.sampleRate)
         if hasExpected {
@@ -153,8 +173,9 @@ public final class JitterBuffer {
         }
 
         if queue.isEmpty {
-            // Network gap. If it persists beyond the target depth, re-prime when data returns.
-            let stallLimit = Double(targetSamples) / config.sampleRate + 0.1
+            // Network gap. Short gaps just pause playout (content is kept and the catch-up below
+            // trims the extra delay afterwards); only a long outage resets and re-primes.
+            let stallLimit = max(config.stallResetSeconds, 2 * Double(targetSamples) / config.sampleRate)
             if now - lastEmitTime > stallLimit {
                 primed = false
                 stats.primed = false
@@ -171,6 +192,19 @@ public final class JitterBuffer {
 
         lastEmitTime = now
         let tol = config.driftToleranceMs * config.sampleRate / 1000
+        // Fast catch-up after an outage piled up data: well above target both right now and on
+        // average (so the normal refill after a Wi-Fi burst doesn't trigger it).
+        let catchUp = config.catchUpMarginMs * config.sampleRate / 1000
+        if depth > Double(targetSamples) + catchUp, depthEMA > Double(targetSamples) + catchUp / 2,
+           now - lastFastDrop >= config.catchUpInterval, queue.count >= 2,
+           queue[0].pos == expectedPos, queue[1].pos == expectedPos + frame {
+            let a = queue.removeFirst()
+            let b = queue.removeFirst()
+            expectedPos += 2 * frame
+            stats.driftDrops += 1
+            lastFastDrop = now
+            return .dropped(pos: a.pos, dropped: a.payload, nextPos: b.pos, next: b.payload)
+        }
         if now - lastAdjustTime >= config.minAdjustInterval {
             if depthEMA > Double(targetSamples) + tol, queue.count >= 2,
                queue[0].pos == expectedPos, queue[1].pos == expectedPos + frame {
@@ -242,8 +276,35 @@ public final class JitterBuffer {
         guard now - lastUnderrunTime >= config.lowerAfterSeconds,
               now - lastLowerTime >= config.lowerAfterSeconds,
               now - startedTime >= config.lowerAfterSeconds else { return }
-        setTarget(ms: stats.targetMs - config.lowerStepMs)
+        decayGapPeak(now: now)
+        let floor = gapPeakMs + config.gapMarginMs
+        let lowered = max(stats.targetMs - config.lowerStepMs, floor)
+        if lowered < stats.targetMs { setTarget(ms: lowered) }
         lastLowerTime = now
+    }
+
+    /// Packets that arrive in bursts (Wi-Fi power save) leave holes; size the target to cover
+    /// the largest recent hole directly instead of creeping up after each underrun.
+    private func noteArrival(now: TimeInterval) {
+        defer { lastArrival = now }
+        guard let last = lastArrival else { lastGapUpdate = now; return }
+        decayGapPeak(now: now)
+        let gapMs = (now - last) * 1000
+        // Gaps of a second or more are outages (handled by stall/re-prime), not jitter.
+        guard gapMs < config.stallResetSeconds * 1000 else { return }
+        if gapMs > gapPeakMs { gapPeakMs = gapMs }
+        let wanted = min(config.maxTargetMs, gapPeakMs + config.gapMarginMs)
+        if wanted > stats.targetMs {
+            setTarget(ms: wanted)
+            lastUnderrunTime = now // hold off lowering for a while
+        }
+    }
+
+    private func decayGapPeak(now: TimeInterval) {
+        let dt = now - lastGapUpdate
+        guard dt > 0 else { return }
+        gapPeakMs *= pow(0.5, dt / config.gapHalfLifeSeconds)
+        lastGapUpdate = now
     }
 
     private func setTarget(ms: Double) {
@@ -253,6 +314,7 @@ public final class JitterBuffer {
     }
 
     private func reset(now: TimeInterval) {
+        lastArrival = nil
         queue.removeAll(keepingCapacity: true)
         primed = false
         stats.primed = false

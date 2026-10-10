@@ -10,7 +10,7 @@ halltone-cli — Halltone test tool
   analyze in.wav                           print RMS/peak and dominant frequency
   send [--port 47800] [--source tap|tone] [--codec pcm|opus] [--mute] [--code N]
        [--no-bonjour] [--seconds N] [--sim-loss 0.05] [--sim-jitter 40]
-       [--latency-log send.csv] [--swap-every N]
+       [--latency-log send.csv] [--swap-every N] [--sim-burst MS [--sim-burst-every MS]]
                                            run the sender (capture on demand)
   receive HOST[:PORT] [--code N] [--name X] [--wav out.wav] [--seconds N]
        [--latency-log recv.csv]            subscribe; play (default) or write decoded audio to a WAV
@@ -64,8 +64,11 @@ do {
         let simJitter = Double(option("--sim-jitter", default: "0")!) ?? 0
         let latencyLog = option("--latency-log").map { URL(fileURLWithPath: $0) }
         let swapEvery = option("--swap-every").flatMap { Double($0) }
+        let burst = Double(option("--sim-burst", default: "0")!) ?? 0
+        let burstEvery = Double(option("--sim-burst-every", default: "2000")!) ?? 2000
         try runSend(port: port, sourceKind: source, codec: codec, mute: mute, pairingCode: code, advertise: !noBonjour,
-                    seconds: seconds, simLoss: simLoss, simJitterMs: simJitter, latencyLog: latencyLog, swapEvery: swapEvery)
+                    seconds: seconds, simLoss: simLoss, simJitterMs: simJitter, latencyLog: latencyLog, swapEvery: swapEvery,
+                    burstMs: burst, burstEveryMs: burstEvery)
     case "receive":
         let code = UInt32(option("--code", default: "0")!) ?? 0
         let name = option("--name", default: "halltone-cli")!

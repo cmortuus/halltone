@@ -64,6 +64,8 @@ public final class Receiver {
     private var seq: UInt32 = 0
     private var pump: DecodePump?
     private var timer: DispatchSourceTimer?
+    private var nudgeTimer: DispatchSourceTimer?
+    private lazy var nudgePacket = Packet(seq: 0, session: 0, message: .nudge).encode()
     private var pathMonitor: NWPathMonitor?
     private var lastAudioAt: TimeInterval = 0
     private var lastSubscribeAt: TimeInterval = 0
@@ -103,6 +105,7 @@ public final class Receiver {
             if let c = connection { send(.bye, over: c) }
             tearDownConnection()
             timer?.cancel(); timer = nil
+            nudgeTimer?.cancel(); nudgeTimer = nil
             pathMonitor?.cancel(); pathMonitor = nil
             pump?.stop(); pump = nil
             sink.stop()
@@ -133,6 +136,8 @@ public final class Receiver {
         guard let endpoint else { return }
         let params = NWParameters.udp
         params.allowLocalEndpointReuse = true
+        // Marks traffic as voice (WMM AC_VO): prioritized, and less power-save batching.
+        params.serviceClass = .interactiveVoice
         let c = NWConnection(to: endpoint, using: params)
         c.stateUpdateHandler = { [weak self] st in
             guard let self else { return }
@@ -230,6 +235,16 @@ public final class Receiver {
     // MARK: - Timers
 
     private func startTimers() {
+        nudgeTimer?.cancel()
+        let n = DispatchSource.makeTimerSource(queue: queue)
+        n.schedule(deadline: .now() + 0.02, repeating: 0.02, leeway: .milliseconds(5))
+        n.setEventHandler { [weak self] in
+            guard let self, case .subscribed = self.state, let c = self.connection else { return }
+            c.send(content: self.nudgePacket, completion: .idempotent)
+        }
+        n.resume()
+        nudgeTimer = n
+
         timer?.cancel()
         let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(deadline: .now() + 0.25, repeating: 0.25)

@@ -20,6 +20,10 @@ public final class Sender {
         /// Test hooks (CLI): randomly drop / delay outgoing audio packets.
         public var simulatedLoss: Double = 0
         public var simulatedJitterMs: Double = 0
+        /// Wi-Fi power-save style bursts: every `simulatedBurstEveryMs`, hold all packets for
+        /// `simulatedBurstMs` and then release them at once.
+        public var simulatedBurstMs: Double = 0
+        public var simulatedBurstEveryMs: Double = 2000
         public init() {}
     }
 
@@ -487,9 +491,16 @@ public final class Sender {
         packetsCounter.add(1)
         bytesCounter.add(UInt32(len))
         if config.simulatedLoss > 0, Double.random(in: 0..<1) < config.simulatedLoss { return }
-        if config.simulatedJitterMs > 0 {
+        var burstDelay = 0.0
+        if config.simulatedBurstMs > 0 {
+            let nowMs = Double(DispatchTime.now().uptimeNanoseconds) / 1e6
+            let phase = nowMs.truncatingRemainder(dividingBy: config.simulatedBurstEveryMs)
+            if phase < config.simulatedBurstMs { burstDelay = (config.simulatedBurstMs - phase) / 1000 }
+        }
+        if config.simulatedJitterMs > 0 || burstDelay > 0 {
             let copy = Data(bytes: ptr, count: len)
-            let delay = Double.random(in: 0..<config.simulatedJitterMs) / 1000
+            let jitter = config.simulatedJitterMs > 0 ? Double.random(in: 0..<config.simulatedJitterMs) / 1000 : 0
+            let delay = jitter + burstDelay
             queue.asyncAfter(deadline: .now() + delay) { [self] in
                 copy.withUnsafeBytes { raw in if let p = raw.baseAddress { fanOutNow(p, raw.count) } }
             }

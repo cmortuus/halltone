@@ -154,7 +154,7 @@ extension JitterSim.Result: CustomStringConvertible {
         c.initialTargetMs = 30
         let r = JitterSim(config: c, jitterMs: 80, seconds: 20, seed: 5).run()
         #expect(r.stats.targetMs > 30)
-        #expect(r.stats.targetMs <= 250)
+        #expect(r.stats.targetMs <= 400)
         // Should settle: far fewer than one underrun per second.
         #expect(r.stats.underruns < 10, "underruns \(r.stats.underruns)")
     }
@@ -179,6 +179,40 @@ extension JitterSim.Result: CustomStringConvertible {
         let r = JitterSim(config: c, seconds: 40).run()
         #expect(r.stats.targetMs < 100)
         #expect(r.stats.underruns == 0)
+    }
+
+    @Test func wifiBurstsAreCoveredWithoutDropouts() {
+        // Simulate power-save delivery: nothing for 250 ms every 1.5 s, then everything at once.
+        let jb = JitterBuffer(config: cfg)
+        let frame = 480, frameDur = 0.01
+        var ring = 0, t = 0.0, nextRender = 0.0, sent = 0
+        var held: [UInt64] = []
+        var underrunsAfterWarmup = 0, emittedFrames = 0
+        while t < 30 {
+            // Sender produces in real time; network holds packets during the burst window.
+            while Double(sent) * frameDur <= t {
+                held.append(UInt64(sent * frame)); sent += 1
+            }
+            let phase = t.truncatingRemainder(dividingBy: 1.5)
+            if phase >= 0.25 { for p in held { jb.push(session: 1, samplePos: p, payload: Data([1]), now: t) }; held.removeAll() }
+            pump: while ring < 2 * frame {
+                switch jb.pull(playoutAhead: ring, now: t) {
+                case .wait: break pump
+                default: ring += frame; emittedFrames += 1
+                }
+            }
+            if t >= nextRender {
+                if ring >= 256 { ring -= 256 } else {
+                    if jb.stats.primed { jb.reportUnderrun(now: t) }
+                    if t > 8 { underrunsAfterWarmup += 1 }
+                }
+                nextRender += 256.0 / 48000
+            }
+            t += 0.001
+        }
+        print("bursts: target \(jb.stats.targetMs) depth \(Int(jb.stats.depthMs)) underruns after warm-up \(underrunsAfterWarmup) gap \(Int(jb.recentGapMs))")
+        #expect(underrunsAfterWarmup == 0)
+        #expect(jb.stats.targetMs >= 250 && jb.stats.targetMs <= 320)
     }
 
     @Test func sessionChangeAndJumpFlush() {

@@ -26,6 +26,13 @@ final class UDPSocket {
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, socklen_t(MemoryLayout<Int32>.size))
         var tv = timeval(tv_sec: 0, tv_usec: 500_000)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        // DSCP EF (46) → Wi-Fi WMM "voice" access category: highest priority, and access points
+        // deliver it promptly to clients in power save.
+        var tclass: Int32 = 46 << 2
+        setsockopt(fd, IPPROTO_IPV6, IPV6_TCLASS, &tclass, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(fd, IPPROTO_IP, IP_TOS, &tclass, socklen_t(MemoryLayout<Int32>.size))
+        var svc: Int32 = NET_SERVICE_TYPE_VO
+        setsockopt(fd, SOL_SOCKET, SO_NET_SERVICE_TYPE, &svc, socklen_t(MemoryLayout<Int32>.size))
         var bufSize: Int32 = 1 << 20
         setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bufSize, socklen_t(MemoryLayout<Int32>.size))
         var addr = sockaddr_in6()

@@ -8,7 +8,7 @@ import HalltoneReceiver
 // MARK: - send
 
 func runSend(port: UInt16, sourceKind: String, codec: CodecID, mute: Bool, pairingCode: UInt32?, advertise: Bool,
-             seconds: Double?, simLoss: Double, simJitterMs: Double, latencyLog: URL?, swapEvery: Double? = nil) throws {
+             seconds: Double?, simLoss: Double, simJitterMs: Double, latencyLog: URL?, swapEvery: Double? = nil, burstMs: Double = 0, burstEveryMs: Double = 2000) throws {
     var cfg = Sender.Config()
     cfg.port = port
     cfg.codec = codec
@@ -16,6 +16,8 @@ func runSend(port: UInt16, sourceKind: String, codec: CodecID, mute: Bool, pairi
     cfg.advertise = advertise
     cfg.simulatedLoss = simLoss
     cfg.simulatedJitterMs = simJitterMs
+    cfg.simulatedBurstMs = burstMs
+    cfg.simulatedBurstEveryMs = burstEveryMs
     let latencyWriter = try latencyLog.map { try CSVWriter(url: $0) }
     let sender = Sender(config: cfg) {
         if sourceKind == "tone" { return ToneSource() }
