@@ -14,7 +14,7 @@ settings:
     CODE_SIGN_STYLE: Automatic
     # Apple Development team (the OU of the signing certificate on this Mac). Change if you use another account.
     DEVELOPMENT_TEAM: 35GARX3Y35
-    MARKETING_VERSION: "0.1"
+    MARKETING_VERSION: "1.0"
     CURRENT_PROJECT_VERSION: "1"
     ENABLE_USER_SCRIPT_SANDBOXING: NO
 
@@ -41,7 +41,8 @@ targets:
         INFOPLIST_FILE: HalltoneMac/Info.plist
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        ENABLE_HARDENED_RUNTIME: NO
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS: HalltoneMac/Halltone.entitlements
         ENABLE_APP_SANDBOX: NO
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
 
@@ -51,6 +52,8 @@ targets:
     sources:
       - path: HalltonePhone/Sources
       - path: HalltonePhone/Assets.xcassets
+      - path: HalltonePhone/PrivacyInfo.xcprivacy
+        buildPhase: resources
     dependencies:
       - package: HalltoneCore
         product: HalltoneCore

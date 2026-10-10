@@ -7,13 +7,23 @@ struct ContentView: View {
     @State private var showAdd = false
     @State private var newHost = ""
     @State private var newPort = "47800"
+    @State private var showAcknowledgements = false
 
     var body: some View {
         NavigationStack {
             List {
                 Section("Macs") {
                     if model.allMacs.isEmpty {
-                        Text("Looking for Macs running Halltone…").foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                Text("Looking for Macs running Halltone…").foregroundStyle(.secondary)
+                            }
+                            Text("Install Halltone for Mac and keep it running, with your iPhone on the same Wi‑Fi network. If your Mac still doesn't appear, tap + and enter its IP address.")
+                                .font(.footnote).foregroundStyle(.secondary)
+                            Link("Get Halltone for Mac", destination: AppLinks.macDownload).font(.footnote)
+                        }
+                        .padding(.vertical, 4)
                     }
                     ForEach(model.allMacs) { mac in
                         Button { model.select(mac) } label: {
@@ -44,6 +54,14 @@ struct ContentView: View {
                 Section {
                     Toggle("Auto-connect on launch", isOn: $model.autoConnect)
                 }
+                Section("About") {
+                    LabeledContent("Version", value: AppLinks.version)
+                    Link("Help & Mac app", destination: AppLinks.home)
+                    ShareLink(item: model.diagnosticsURL) {
+                        Label("Share diagnostics log", systemImage: "doc.text.magnifyingglass")
+                    }
+                    Button("Acknowledgements") { showAcknowledgements = true }
+                }
             }
             .navigationTitle("Halltone")
             .toolbar {
@@ -68,6 +86,19 @@ struct ContentView: View {
                 .background(.bar)
             }
             .sheet(isPresented: $showAdd) { addSheet }
+            .sheet(isPresented: $showAcknowledgements) {
+                NavigationStack {
+                    ScrollView {
+                        Text(Acknowledgements.text)
+                            .font(.footnote.monospaced())
+                            .textSelection(.enabled)
+                            .padding()
+                    }
+                    .navigationTitle("Acknowledgements")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar { Button("Done") { showAcknowledgements = false } }
+                }
+            }
             .alert("Pairing code", isPresented: Binding(get: { model.pairingPrompt != nil }, set: { if !$0 { model.pairingPrompt = nil } })) {
                 TextField("1234", text: $model.pairingInput).keyboardType(.numberPad)
                 Button("Connect") { model.submitPairingCode() }

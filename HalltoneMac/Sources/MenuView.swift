@@ -39,8 +39,12 @@ struct MenuView: View {
                 Button("New code") { model.regeneratePairingCode() }
             }
             Divider()
-            Button("Quit Halltone") { model.quit() }
-                .keyboardShortcut("q")
+            HStack {
+                Button("About & Acknowledgements…") { AboutPanel.show() }
+                Spacer()
+                Button("Quit Halltone") { model.quit() }
+                    .keyboardShortcut("q")
+            }
         }
         .padding(14)
         .frame(width: 320)

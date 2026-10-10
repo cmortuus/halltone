@@ -10,9 +10,8 @@ import HalltoneReceiver
 
 private let log = Logger(subsystem: Constants.logSubsystem, category: "App")
 
-/// Notice-level log, also appended to Documents/halltone.log so it can be pulled over USB with
-/// `xcrun devicectl device copy from --domain-type appDataContainer --domain-identifier
-/// com.halltone.phone --source Documents/halltone.log --destination halltone.log`.
+/// Notice-level log, also appended to Documents/halltone.log. Developers pull it with
+/// scripts/phone-log.sh (development-signed builds); users share it from the About section.
 func diag(_ message: String) {
     log.notice("\(message, privacy: .public)")
     DiagFile.shared.append(message)
@@ -21,7 +20,7 @@ func diag(_ message: String) {
 final class DiagFile {
     static let shared = DiagFile()
     private let queue = DispatchQueue(label: "com.halltone.diagfile")
-    private let url: URL
+    let url: URL
     private let formatter: DateFormatter
 
     private init() {
@@ -113,7 +112,7 @@ final class AppModel: ObservableObject {
         receiver.onStats = { [weak self] s in
             Task { @MainActor in
                 self?.stats = s
-                if s.state.isActive {
+                if s.state.isActive, Self.shouldLogStats() {
                     diag("stats buf=\(s.bufferMs)/\(s.targetMs) loss=\(s.lossPercent)% pps=\(s.packetsPerSecond) under=\(s.underruns) cb=\(s.callbackFrames) engine=\(self?.playback.engine.isRunning ?? false)")
                 }
             }
@@ -140,15 +139,37 @@ final class AppModel: ObservableObject {
 
     func connect(_ mac: MacEntry) {
         pairingError = nil
-        // Debug/test convenience: `-pairingCode 1234` as a launch argument stands in for the Keychain.
-        let launchCode = UInt32(ProcessInfo.processInfo.environment["HALLTONE_PAIRING_CODE"] ?? "")
-            ?? (defaults.string(forKey: "pairingCode").flatMap(UInt32.init))
-        guard let code = Keychain.pairingCode(for: mac.pairingKey) ?? launchCode else {
+        guard let code = Keychain.pairingCode(for: mac.pairingKey) ?? Self.debugPairingCode() else {
             pairingInput = ""
             pairingPrompt = mac
             return
         }
         connect(mac, code: code)
+    }
+
+    /// Debug builds only: `-pairingCode 1234` as a launch argument (or HALLTONE_PAIRING_CODE in the
+    /// environment) stands in for the Keychain, for automated Simulator runs. Compiled out of Release.
+    /// Per-second stats in Debug builds; every 10 s in Release to keep the log small.
+    private static var statsCounter = 0
+    private static func shouldLogStats() -> Bool {
+        #if DEBUG
+        return true
+        #else
+        statsCounter += 1
+        return statsCounter % 10 == 1
+        #endif
+    }
+
+    /// URL of the diagnostics log, for the in-app share button.
+    var diagnosticsURL: URL { DiagFile.shared.url }
+
+    private static func debugPairingCode() -> UInt32? {
+        #if DEBUG
+        return UInt32(ProcessInfo.processInfo.environment["HALLTONE_PAIRING_CODE"] ?? "")
+            ?? UserDefaults.standard.string(forKey: "pairingCode").flatMap(UInt32.init)
+        #else
+        return nil
+        #endif
     }
 
     func submitPairingCode() {

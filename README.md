@@ -1,7 +1,31 @@
-# Halltone — Mac → iPhone LAN audio relay
+# Halltone
 
-Streams the Mac's system audio over Wi‑Fi to an iPhone, which plays it to whatever it is
-connected to (AirPods). Keep YouTube running on the Mac, walk around the house with the phone.
+<img src="Design/icon-1024.png" width="96" align="right" alt="Halltone icon">
+
+**Stream your Mac's audio to your iPhone over Wi‑Fi.** Leave a video or playlist running on the
+Mac, put the phone in your pocket, and keep listening on your AirPods (or any headphones on the
+phone) anywhere your Wi‑Fi reaches. Bluetooth drops out a few rooms from the Mac; the phone in
+your pocket doesn't.
+
+- About 100 ms of latency on a good network, plus your headphones' own delay
+- Reconnects by itself after Wi‑Fi dead spots, keeps playing with the screen locked
+- Opus or uncompressed audio; play/pause and skip on the Mac from the lock screen
+- Local network only: no accounts, no cloud, no data collection ([privacy policy](PRIVACY.md))
+
+<p>
+<img src="docs/app-store/screenshots/01-connected.png" width="220" alt="Connected">
+<img src="docs/app-store/screenshots/03-connected-dark.png" width="220" alt="Connected, dark mode">
+</p>
+
+## Get it
+
+- **Mac** (macOS 14.2+): download `Halltone.dmg` from [Releases](https://github.com/cmortuus/halltone/releases/latest),
+  open it, and drag Halltone to Applications. It lives in the menu bar and shows a pairing code.
+- **iPhone** (iOS 17+): App Store, coming soon. Or build it yourself (below).
+
+Both devices need to be on the same local network. See [Setup notes](#setup-notes) for AirPods tips.
+
+## How it works
 
 ```
 Mac: process tap → ring → Opus/PCM → UDP ──LAN──▶ iPhone: jitter buffer → decode/PLC → AVAudioEngine → AirPods
@@ -20,7 +44,7 @@ The Mac only captures audio while a subscriber is alive.
 | `Tools/halltone-cli` | macOS test tool: capture to WAV, loopback sender/receiver, impairment simulation, latency report. |
 | `project.yml` | XcodeGen spec → `xcodegen generate` → `Halltone.xcodeproj`. |
 
-## Build
+## Build from source
 
 Requirements: macOS 14.2+ (process taps), Xcode 16+, XcodeGen (`brew install xcodegen`).
 
@@ -31,6 +55,9 @@ open Halltone.xcodeproj      # schemes: HalltoneMac, HalltonePhone
 
 Signing uses the Apple Development team in `project.yml` (`DEVELOPMENT_TEAM`). A free Apple ID
 works for local builds (re-sign every 7 days).
+
+Release DMG (Developer ID signed + notarized): `scripts/release-mac.sh` (see the prerequisites at
+the top of the script; `--skip-notarize` for a local test build).
 
 Without Xcode's IDE, the Mac app and CLI also build with SwiftPM:
 
@@ -114,6 +141,11 @@ latency (buffer + hand-off ring + ~20 ms output), which is the rough check the s
   encode/decode through `AVAudioConverter` (even PLC with an empty packet) but no FEC control, and
   iOS availability wasn't verified, so libopus stays.
 - Logs: `log stream --predicate 'subsystem == "com.halltone"'`.
+- Debug-only hooks (compiled out of Release): the `-pairingCode` launch argument /
+  `HALLTONE_PAIRING_CODE` for automated Simulator runs, and per-second stats in the phone's
+  diagnostics log (Release logs every 10 s). Users share the log from About → Share diagnostics log.
+- App Store material (listing copy, review notes, privacy answers, screenshots) is in
+  `docs/app-store/`.
 
 ## Status and known issues (2026-10-10)
 

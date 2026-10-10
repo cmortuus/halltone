@@ -14,11 +14,13 @@ sed -e 's/\$(EXECUTABLE_NAME)/Halltone/' -e 's/\$(PRODUCT_BUNDLE_IDENTIFIER)/com
 # share the same name, which makes signing by name ambiguous. A stable identity keeps the
 # System Audio Recording permission across rebuilds; ad hoc is only a fallback.
 IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | grep "Apple Development" | grep -v REVOKED | head -1 | awk '{print $2}')
-if [[ -n "$IDENTITY" ]] && codesign --force --sign "$IDENTITY" --identifier com.halltone.mac "$APP" >/dev/null 2>&1; then
+# Hardened runtime + entitlements, same as the notarized release build, so local runs exercise it.
+if [[ -n "$IDENTITY" ]] && codesign --force --options runtime --entitlements Halltone.entitlements \
+     --sign "$IDENTITY" --identifier com.halltone.mac "$APP" >/dev/null 2>&1; then
   :
 else
   echo "warning: no usable Apple Development identity; signing ad hoc (System Audio Recording may need re-granting)" >&2
-  codesign --force --sign - --identifier com.halltone.mac "$APP"
+  codesign --force --options runtime --entitlements Halltone.entitlements --sign - --identifier com.halltone.mac "$APP"
 fi
 echo "$APP"
 if [[ "${1:-}" == "--run" ]]; then
