@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.halltone.cli</string>
+	<key>CFBundleName</key>
+	<string>halltone-cli</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Halltone captures system audio to stream it to your iPhone.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Halltone streams audio to devices on your local network.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_halltone._udp</string>
+	</array>
+</dict>
+</plist>

@@ -1,0 +1,13 @@
+.DS_Store
+.build/
+DerivedData/
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+*.wav
+Design/iconset.iconset/
+Design/*.preview.jpg
+*.swp
+Tools/halltone-cli/.swiftpm/
+Packages/HalltoneCore/.swiftpm/
+phone-halltone.log

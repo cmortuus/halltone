@@ -1,0 +1,80 @@
+name: Halltone
+options:
+  bundleIdPrefix: com.halltone
+  createIntermediateGroups: true
+  deploymentTarget:
+    macOS: "14.2"
+    iOS: "17.0"
+  xcodeVersion: "16.0"
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+    # Apple Development team (the OU of the signing certificate on this Mac). Change if you use another account.
+    DEVELOPMENT_TEAM: 35GARX3Y35
+    MARKETING_VERSION: "0.1"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+
+packages:
+  HalltoneCore:
+    path: Packages/HalltoneCore
+
+targets:
+  HalltoneMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: HalltoneMac/Sources
+      - path: HalltoneMac/Assets.xcassets
+    dependencies:
+      - package: HalltoneCore
+        product: HalltoneCore
+      - package: HalltoneCore
+        product: HalltoneSender
+    settings:
+      base:
+        PRODUCT_NAME: Halltone
+        PRODUCT_BUNDLE_IDENTIFIER: com.halltone.mac
+        INFOPLIST_FILE: HalltoneMac/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_HARDENED_RUNTIME: NO
+        ENABLE_APP_SANDBOX: NO
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
+
+  HalltonePhone:
+    type: application
+    platform: iOS
+    sources:
+      - path: HalltonePhone/Sources
+      - path: HalltonePhone/Assets.xcassets
+    dependencies:
+      - package: HalltoneCore
+        product: HalltoneCore
+      - package: HalltoneCore
+        product: HalltoneReceiver
+    settings:
+      base:
+        PRODUCT_NAME: Halltone
+        PRODUCT_BUNDLE_IDENTIFIER: com.halltone.phone
+        INFOPLIST_FILE: HalltonePhone/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1"
+        SUPPORTS_MACCATALYST: NO
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
+
+schemes:
+  HalltoneMac:
+    build:
+      targets: { HalltoneMac: all }
+    run:
+      config: Debug
+  HalltonePhone:
+    build:
+      targets: { HalltonePhone: all }
+    run:
+      config: Debug
