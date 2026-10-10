@@ -133,6 +133,7 @@ public final class ProcessTapSource: AudioSource {
         guard err == noErr, agg != kAudioObjectUnknown else { teardown(); throw Failure.createAggregate(err) }
         aggregateID = agg
         log.notice("aggregate created after \(ms()) ms (tapOnly=\(self.tapOnly))")
+        Self.setSmallIOBuffer(aggregateID)
 
         // 4. Scratch for de-interleaving (only used if the tap is non-interleaved).
         if !interleaved {
@@ -239,6 +240,25 @@ public final class ProcessTapSource: AudioSource {
     }
 
     // MARK: Core Audio helpers
+
+    /// Asks for 128-frame IO (2.7 ms) instead of the default 512 (10.7 ms): audio reaches the
+    /// encoder sooner. Clamped to what the device allows.
+    private static func setSmallIOBuffer(_ device: AudioObjectID, frames wanted: UInt32 = 128) {
+        var rangeAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyBufferFrameSizeRange,
+                                                   mScope: kAudioObjectPropertyScopeGlobal,
+                                                   mElement: kAudioObjectPropertyElementMain)
+        var range = AudioValueRange()
+        var size = UInt32(MemoryLayout<AudioValueRange>.size)
+        var frames = wanted
+        if AudioObjectGetPropertyData(device, &rangeAddr, 0, nil, &size, &range) == noErr {
+            frames = UInt32(min(max(Double(wanted), range.mMinimum), range.mMaximum))
+        }
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyBufferFrameSize,
+                                              mScope: kAudioObjectPropertyScopeGlobal,
+                                              mElement: kAudioObjectPropertyElementMain)
+        let err = AudioObjectSetPropertyData(device, &addr, 0, nil, UInt32(MemoryLayout<UInt32>.size), &frames)
+        log.notice("IO buffer \(frames) frames (status \(err))")
+    }
 
     private static func getProperty<T>(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
                                        _ value: inout T) -> OSStatus {

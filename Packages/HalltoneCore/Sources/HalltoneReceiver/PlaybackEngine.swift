@@ -43,8 +43,9 @@ public final class PlaybackEngine: PlaybackSink {
             guard list.count >= 2, let l = list[0].mData?.assumingMemoryBound(to: Float.self),
                   let r = list[1].mData?.assumingMemoryBound(to: Float.self) else { return noErr }
             if self?.muted == true || frames > scratchFrames {
+                // Output zeros but don't flag the buffer as silent: a paused app must keep
+                // "playing" or iOS suspends it in the background and the stream is lost.
                 l.update(repeating: 0, count: frames); r.update(repeating: 0, count: frames)
-                isSilence.pointee = true
                 rendered.add(UInt64(frames))
                 return noErr
             }

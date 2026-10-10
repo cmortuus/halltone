@@ -182,12 +182,41 @@ extension JitterSim.Result: CustomStringConvertible {
     }
 
     @Test func wifiBurstsAreCoveredWithoutDropouts() {
-        // Simulate power-save delivery: nothing for 250 ms every 1.5 s, then everything at once.
+        let r = burstRun(JitterBuffer(config: cfg))
+        print("bursts/balanced: target \(r.target) underruns after warm-up \(r.underruns) conceals \(r.conceals)")
+        #expect(r.underruns == 0)
+        #expect(r.target >= 250 && r.target <= 320)
+    }
+
+    @Test func lowestModeConcealsInsteadOfWaiting() {
+        let r = burstRun(JitterBuffer(config: .preset(.lowest, frameSamples: 480)))
+        print("bursts/lowest: target \(r.target) underruns after warm-up \(r.underruns) conceals \(r.conceals)")
+        #expect(r.underruns == 0)        // the render side never starves...
+        #expect(r.target <= 150)         // ...and latency stays capped
+        #expect(r.conceals > 0)          // gaps were smoothed over with concealment
+    }
+
+    @Test func stableModeKeepsABigCushion() {
+        let r = burstRun(JitterBuffer(config: .preset(.stable, frameSamples: 480)))
+        #expect(r.underruns == 0)
+        #expect(r.target >= 250)
+    }
+
+    @Test func modeSwitchReprimes() {
         let jb = JitterBuffer(config: cfg)
+        for i in 0..<20 { jb.push(session: 1, samplePos: UInt64(i * 480), payload: Data(), now: Double(i) * 0.01) }
+        #expect(jb.pull(playoutAhead: 0, now: 0.2) != .wait)
+        jb.updateConfig(.preset(.stable, frameSamples: 480), now: 0.3)
+        #expect(jb.stats.targetMs == 300)
+        #expect(jb.pull(playoutAhead: 0, now: 0.3) == .wait)
+    }
+
+    /// Power-save delivery: nothing for 250 ms every 1.5 s, then everything at once.
+    private func burstRun(_ jb: JitterBuffer) -> (target: Double, underruns: Int, conceals: Int) {
         let frame = 480, frameDur = 0.01
         var ring = 0, t = 0.0, nextRender = 0.0, sent = 0
         var held: [UInt64] = []
-        var underrunsAfterWarmup = 0, emittedFrames = 0
+        var underrunsAfterWarmup = 0, emittedFrames = 0, conceals = 0
         while t < 30 {
             // Sender produces in real time; network holds packets during the burst window.
             while Double(sent) * frameDur <= t {
@@ -198,6 +227,7 @@ extension JitterSim.Result: CustomStringConvertible {
             pump: while ring < 2 * frame {
                 switch jb.pull(playoutAhead: ring, now: t) {
                 case .wait: break pump
+                case .conceal: ring += frame; emittedFrames += 1; if t > 8 { conceals += 1 }
                 default: ring += frame; emittedFrames += 1
                 }
             }
@@ -210,9 +240,8 @@ extension JitterSim.Result: CustomStringConvertible {
             }
             t += 0.001
         }
-        print("bursts: target \(jb.stats.targetMs) depth \(Int(jb.stats.depthMs)) underruns after warm-up \(underrunsAfterWarmup) gap \(Int(jb.recentGapMs))")
-        #expect(underrunsAfterWarmup == 0)
-        #expect(jb.stats.targetMs >= 250 && jb.stats.targetMs <= 320)
+        _ = emittedFrames
+        return (jb.stats.targetMs, underrunsAfterWarmup, conceals)
     }
 
     @Test func sessionChangeAndJumpFlush() {

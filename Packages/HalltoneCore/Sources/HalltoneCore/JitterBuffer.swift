@@ -25,6 +25,11 @@ public final class JitterBuffer {
         public var catchUpInterval: TimeInterval = 0.05
         /// A network gap longer than this resets and re-primes; shorter gaps just pause playout.
         public var stallResetSeconds: Double = 1.0
+        /// Low-latency behavior: during a network gap keep playing concealment (Opus PLC) instead
+        /// of pausing, for up to `maxConcealMs`; packets for the concealed time are then dropped.
+        /// Latency stays put at the cost of a brief blip.
+        public var concealGaps = false
+        public var maxConcealMs: Double = 300
         /// Raise target by this much on an underrun.
         public var raiseStepMs: Double = 20
         /// Lower target by this much after `lowerAfterSeconds` without an underrun.
@@ -77,6 +82,7 @@ public final class JitterBuffer {
     }
 
     public private(set) var config: Config
+    private var concealedRun = 0
     public private(set) var stats = Stats()
     public var frameSamples: Int { config.frameSamples }
 
@@ -172,6 +178,15 @@ public final class JitterBuffer {
             }
         }
 
+        if queue.isEmpty, config.concealGaps,
+           Double(concealedRun) < config.maxConcealMs * config.sampleRate / 1000 {
+            let pos = expectedPos
+            expectedPos += frame
+            concealedRun += config.frameSamples
+            stats.lost += 1
+            lastEmitTime = now
+            return .conceal(pos: pos, next: nil)
+        }
         if queue.isEmpty {
             // Network gap. Short gaps just pause playout (content is kept and the catch-up below
             // trims the extra delay afterwards); only a long outage resets and re-primes.
@@ -228,6 +243,7 @@ public final class JitterBuffer {
         if head.pos == expectedPos {
             queue.removeFirst()
             expectedPos += frame
+            concealedRun = 0
             return .frame(pos: head.pos, payload: head.payload)
         }
         // head.pos > expectedPos: the expected frame is lost (or still in flight, but later data
@@ -250,6 +266,16 @@ public final class JitterBuffer {
     }
 
     public func flush(now: TimeInterval) { reset(now: now) }
+
+    /// Switch latency behavior. Flushes and re-primes at the new starting depth.
+    public func updateConfig(_ new: Config, now: TimeInterval) {
+        var c = new
+        c.frameSamples = config.frameSamples
+        config = c
+        gapPeakMs = 0
+        setTarget(ms: c.initialTargetMs)
+        reset(now: now)
+    }
 
     /// Packets arriving after their play time are a jitter signal too: several in one second
     /// means the target is too shallow, even if concealment hid the gaps.
@@ -315,6 +341,7 @@ public final class JitterBuffer {
 
     private func reset(now: TimeInterval) {
         lastArrival = nil
+        concealedRun = 0
         queue.removeAll(keepingCapacity: true)
         primed = false
         stats.primed = false
@@ -323,5 +350,46 @@ public final class JitterBuffer {
         stats.resets += 1
         startedTime = now
         lastLowerTime = now
+    }
+}
+
+
+/// User-facing latency/robustness trade-off.
+public enum LatencyMode: String, CaseIterable, Codable {
+    /// Smallest buffer; network gaps are concealed (brief blips) rather than waited out.
+    case lowest
+    /// Adapts to the network: covers the gaps it actually sees. Default.
+    case balanced
+    /// Big buffer that rides out Wi-Fi access-point handoffs and dead spots without dropouts.
+    case stable
+}
+
+extension JitterBuffer.Config {
+    public static func preset(_ mode: LatencyMode, frameSamples: Int) -> JitterBuffer.Config {
+        var c = JitterBuffer.Config(frameSamples: frameSamples)
+        switch mode {
+        case .lowest:
+            c.initialTargetMs = 40
+            c.minTargetMs = 20
+            c.maxTargetMs = 150
+            c.gapMarginMs = 15
+            c.gapHalfLifeSeconds = 15
+            c.raiseStepMs = 10
+            c.catchUpMarginMs = 40
+            c.concealGaps = true
+            c.maxConcealMs = 300
+        case .balanced:
+            break
+        case .stable:
+            c.initialTargetMs = 300
+            c.minTargetMs = 250
+            c.maxTargetMs = 1500
+            c.gapMarginMs = 120
+            c.gapHalfLifeSeconds = 120
+            c.lowerAfterSeconds = 30
+            c.catchUpMarginMs = 300
+            c.stallResetSeconds = 4
+        }
+        return c
     }
 }

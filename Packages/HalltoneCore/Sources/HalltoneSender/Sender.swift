@@ -119,7 +119,8 @@ public final class Sender {
         running = true
         if config.advertise {
             advertiser = BonjourAdvertiser(name: config.macName, port: config.port,
-                                           txtValues: ["name": config.macName, "v": "1"], queue: queue)
+                                           txtValues: ["name": config.macName, "v": "1", "port": String(config.port)],
+                                           queue: queue)
         }
         let t = Thread { [self] in receiveLoop(sock) }
         t.qualityOfService = .userInitiated

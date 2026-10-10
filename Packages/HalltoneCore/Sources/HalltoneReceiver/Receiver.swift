@@ -57,6 +57,17 @@ public final class Receiver {
     }
     public private(set) var stats = Stats()
 
+    /// Latency/robustness trade-off for the jitter buffer. Applies immediately (re-primes).
+    public var latencyMode: LatencyMode = .balanced {
+        didSet {
+            let mode = latencyMode
+            queue.async { [self] in
+                guard let pump else { return }
+                pump.apply(.preset(mode, frameSamples: pump.jitter.frameSamples))
+            }
+        }
+    }
+
     private let sink: PlaybackSink
     /// High priority: packet arrival times feed the jitter buffer's gap estimate, so a queue that
     /// iOS batches in the background would look like a bursty network and inflate latency.
@@ -201,7 +212,7 @@ public final class Receiver {
                     state = .failed("codec \(codec) not supported on this build")
                     return
                 }
-                let jb = JitterBuffer(config: JitterBuffer.Config(frameSamples: Int(frameSamples)))
+                let jb = JitterBuffer(config: .preset(latencyMode, frameSamples: Int(frameSamples)))
                 let p = DecodePump(jitter: jb, decoder: decoder, sink: sink)
                 p.onFrameScheduled = onFrameScheduled
                 p.start()

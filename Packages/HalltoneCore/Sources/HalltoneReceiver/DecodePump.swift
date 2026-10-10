@@ -64,6 +64,13 @@ final class DecodePump {
         sink.wake.signal()
     }
 
+    func apply(_ config: JitterBuffer.Config) {
+        lock.lock(); defer { lock.unlock() }
+        jitter.updateConfig(config, now: now())
+        decoder.reset()
+        cachedPos = nil
+    }
+
     func flush() {
         lock.lock(); defer { lock.unlock() }
         jitter.flush(now: now())

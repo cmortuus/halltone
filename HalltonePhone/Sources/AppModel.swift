@@ -53,15 +53,33 @@ struct MacEntry: Identifiable, Hashable, Codable {
     var kind: Kind
     var host: String = ""
     var port: UInt16 = Constants.defaultPort
+    /// From the Mac's Bonjour TXT record: its address on its preferred (wired) interface. A Mac on
+    /// both Ethernet and Wi-Fi is reachable at two addresses; connecting to the wired one avoids a
+    /// second wireless hop and the Mac's Wi-Fi/Bluetooth radio sharing. Not persisted.
+    var preferredHost: String?
 
-    static func bonjour(name: String) -> MacEntry { MacEntry(id: "bonjour:\(name)", name: name, kind: .bonjour) }
+    static func bonjour(name: String, preferredHost: String? = nil, port: UInt16? = nil) -> MacEntry {
+        var e = MacEntry(id: "bonjour:\(name)", name: name, kind: .bonjour)
+        e.preferredHost = preferredHost
+        if let port { e.port = port }
+        return e
+    }
+
+    // Identity is the id alone, so a refreshed address doesn't make it a different Mac.
+    static func == (a: MacEntry, b: MacEntry) -> Bool { a.id == b.id }
+    func hash(into h: inout Hasher) { h.combine(id) }
+    private enum CodingKeys: String, CodingKey { case id, name, kind, host, port }
     static func manual(host: String, port: UInt16) -> MacEntry {
         MacEntry(id: "manual:\(host):\(port)", name: "\(host):\(port)", kind: .manual, host: host, port: port)
     }
 
     var endpoint: NWEndpoint {
         switch kind {
-        case .bonjour: return .service(name: name, type: Constants.serviceType, domain: "local.", interface: nil)
+        case .bonjour:
+            if let preferredHost, let p = NWEndpoint.Port(rawValue: port) {
+                return .hostPort(host: NWEndpoint.Host(preferredHost), port: p)
+            }
+            return .service(name: name, type: Constants.serviceType, domain: "local.", interface: nil)
         case .manual: return .hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port) ?? 47800)
         }
     }
@@ -76,6 +94,7 @@ final class AppModel: ObservableObject {
         static let manual = "manualMacs"
         static let autoConnect = "autoConnect"
         static let lastMac = "lastMac"
+        static let latencyMode = "latencyMode"
     }
 
     @Published private(set) var discovered: [MacEntry] = []
@@ -85,6 +104,13 @@ final class AppModel: ObservableObject {
     @Published private(set) var stats = Receiver.Stats()
     @Published private(set) var paused = false
     @Published var autoConnect: Bool { didSet { defaults.set(autoConnect, forKey: Key.autoConnect) } }
+    @Published var latencyMode: LatencyMode {
+        didSet {
+            defaults.set(latencyMode.rawValue, forKey: Key.latencyMode)
+            receiver.latencyMode = latencyMode
+            diag("latency mode: \(latencyMode.rawValue)")
+        }
+    }
     @Published var pairingPrompt: MacEntry?
     @Published var pairingInput = ""
     @Published var pairingError: String?
@@ -105,6 +131,8 @@ final class AppModel: ObservableObject {
     init() {
         receiver = Receiver(sink: playback)
         autoConnect = defaults.object(forKey: Key.autoConnect) as? Bool ?? true
+        latencyMode = defaults.string(forKey: Key.latencyMode).flatMap(LatencyMode.init(rawValue:)) ?? .balanced
+        receiver.latencyMode = latencyMode
         if let data = defaults.data(forKey: Key.manual), let list = try? JSONDecoder().decode([MacEntry].self, from: data) {
             manual = list
         }
@@ -141,7 +169,8 @@ final class AppModel: ObservableObject {
 
     // MARK: - Connect / disconnect
 
-    func connect(_ mac: MacEntry) {
+    func connect(_ requested: MacEntry) {
+        let mac = discovered.first(where: { $0.id == requested.id }) ?? requested
         pairingError = nil
         guard let code = Keychain.pairingCode(for: mac.pairingKey) ?? Self.debugPairingCode() else {
             pairingInput = ""
@@ -187,7 +216,7 @@ final class AppModel: ObservableObject {
     }
 
     private func connect(_ mac: MacEntry, code: UInt32) {
-        diag("connect → \(mac.name)")
+        diag("connect → \(mac.name) via \(mac.preferredHost ?? (mac.kind == .manual ? mac.host : "Bonjour"))")
         selected = mac
         defaults.set(mac.id, forKey: Key.lastMac)
         autoConnectPending = nil
@@ -258,21 +287,34 @@ final class AppModel: ObservableObject {
     private func startBrowsing() {
         let params = NWParameters()
         params.includePeerToPeer = false
-        let b = NWBrowser(for: .bonjour(type: Constants.serviceType, domain: nil), using: params)
+        let b = NWBrowser(for: .bonjourWithTXTRecord(type: Constants.serviceType, domain: nil), using: params)
         b.stateUpdateHandler = { st in log.info("browser: \(String(describing: st), privacy: .public)") }
         b.browseResultsChangedHandler = { [weak self] results, _ in
-            let names: [String] = results.compactMap {
-                if case .service(let name, _, _, _) = $0.endpoint { return name }
-                return nil
+            var byName: [String: MacEntry] = [:]
+            for r in results {
+                guard case .service(let name, _, _, _) = r.endpoint else { continue }
+                var addr: String?, port: UInt16?
+                if case .bonjour(let txt) = r.metadata {
+                    addr = txt["addr"].flatMap { $0.isEmpty ? nil : $0 }
+                    port = txt["port"].flatMap(UInt16.init)
+                }
+                // The same Mac shows up once per interface; keep whichever result carries an address.
+                if byName[name]?.preferredHost == nil {
+                    byName[name] = .bonjour(name: name, preferredHost: addr, port: port)
+                }
             }
-            Task { @MainActor in self?.updateDiscovered(names.sorted()) }
+            let entries = byName.values.sorted { $0.name < $1.name }
+            Task { @MainActor in self?.updateDiscovered(entries) }
         }
         b.start(queue: .global(qos: .utility))
         browser = b
     }
 
-    private func updateDiscovered(_ names: [String]) {
-        discovered = names.map(MacEntry.bonjour)
+    private func updateDiscovered(_ entries: [MacEntry]) {
+        for e in entries where e.preferredHost != discovered.first(where: { $0.id == e.id })?.preferredHost {
+            diag("discovered \(e.name) at \(e.preferredHost ?? "(no address advertised)")")
+        }
+        discovered = entries
         if selected == nil { selected = discovered.first ?? manual.first }
         if let pending = autoConnectPending, let m = discovered.first(where: { $0.id == pending }) {
             autoConnectPending = nil
