@@ -38,6 +38,8 @@ public final class Receiver {
         public var estimatedLatencyMs = 0
         /// Largest render callback seen, in frames.
         public var callbackFrames = 0
+        /// Largest recent gap between packet arrivals (decaying), in ms.
+        public var arrivalGapMs = 0
         /// From the Mac's STATUS: whether headphone/lock-screen controls work. nil = unknown
         /// (older Mac app, or no STATUS yet).
         public var macControlsAvailable: Bool?
@@ -56,7 +58,9 @@ public final class Receiver {
     public private(set) var stats = Stats()
 
     private let sink: PlaybackSink
-    private let queue = DispatchQueue(label: "com.halltone.receiver")
+    /// High priority: packet arrival times feed the jitter buffer's gap estimate, so a queue that
+    /// iOS batches in the background would look like a bursty network and inflate latency.
+    private let queue = DispatchQueue(label: "com.halltone.receiver", qos: .userInteractive)
     private var connection: NWConnection?
     private var endpoint: NWEndpoint?
     private var pairingCode: UInt32 = 0
@@ -313,6 +317,7 @@ public final class Receiver {
         packetsThisSecond = 0; bytesThisSecond = 0
         stats.estimatedLatencyMs = Int(js.depthMs)
         stats.callbackFrames = Int(sink.maxCallbackFrames.load())
+        stats.arrivalGapMs = Int(pump?.recentGapMs ?? 0)
         if case .subscribed = state, let c = connection {
             send(.keepalive(lastSeqReceived: lastAudioSeq, lossPermille: UInt16(clamping: permille),
                             bufferMs: UInt16(clamping: stats.bufferMs)), over: c)

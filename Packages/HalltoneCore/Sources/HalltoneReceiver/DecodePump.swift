@@ -76,6 +76,11 @@ final class DecodePump {
         return jitter.stats
     }
 
+    var recentGapMs: Double {
+        lock.lock(); defer { lock.unlock() }
+        return jitter.recentGapMs
+    }
+
     private func now() -> TimeInterval { ProcessInfo.processInfo.systemUptime }
 
     private func loop() {
