@@ -211,6 +211,28 @@ extension JitterSim.Result: CustomStringConvertible {
         }
     }
 
+    /// Regression: a locked phone's Wi-Fi goes silent ~0.5 s every minute or two. Those blackouts
+    /// are longer than Lowest's ceiling, so they can't be covered; they used to pin the target at
+    /// the ceiling anyway, adding latency for minutes without preventing the next dropout.
+    @Test func blackoutsBeyondCeilingDontInflateLowest() {
+        let jb = JitterBuffer(config: .preset(.lowest, frameSamples: 480))
+        var t = 0.0, pos: UInt64 = 0
+        func deliver(until end: Double) {
+            // 100 ms power-save clumps.
+            while t < end {
+                t += 0.1
+                for _ in 0..<10 { jb.push(session: 1, samplePos: pos, payload: Data([1]), now: t); pos += 480 }
+                while jb.pull(playoutAhead: 0, now: t) != .wait {}
+            }
+        }
+        deliver(until: 30)
+        let before = jb.stats.targetMs
+        t += 0.5 // blackout: nothing for 500 ms, then the backlog arrives
+        deliver(until: 60)
+        #expect(before < 150)
+        #expect(jb.stats.targetMs < 150, "target \(jb.stats.targetMs) after a blackout")
+    }
+
     /// Packets arrive in clumps every `period` + random(0..<spread) s, as from a phone in Wi-Fi
     /// power save; a 256-frame render callback. Counts after a 5 s warm-up.
     private func clumpRun(_ c: JitterBuffer.Config, period: Double, spread: Double) -> (target: Double, conceals: Int, underruns: Int) {

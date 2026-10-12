@@ -47,6 +47,11 @@ public final class Receiver {
         public var macControlsAvailable: Bool?
         /// From the Mac's STATUS: whether it can keep headphones on this phone. nil = unknown.
         public var macCanHoldHeadphones: Bool?
+        /// Diagnostics, max over the last 10 s: longest gap between audio packets as received
+        /// (raw, not the decaying estimate), and longest gap between nudge timer firings. A timer
+        /// gap as long as the packet gap means iOS wasn't running us, not that the network stalled.
+        public var maxArrivalGapMs10s = 0
+        public var maxTimerGapMs10s = 0
         public init() {}
     }
 
@@ -114,6 +119,10 @@ public final class Receiver {
     private var lastReceived: UInt64 = 0
     private var pathInterfaces: Set<String> = []
     private var sessionKnown: UInt32?
+    private var lastTimerFire: TimeInterval?
+    private var windowTimerGap: TimeInterval = 0
+    private var lastPacketArrival: TimeInterval?
+    private var windowArrivalGap: TimeInterval = 0
 
     public init(sink: PlaybackSink) {
         self.sink = sink
@@ -253,6 +262,8 @@ public final class Receiver {
             tearDownConnection()
         case .audio(let samplePos, _, let payload):
             lastAudioAt = now()
+            if let last = lastPacketArrival { windowArrivalGap = max(windowArrivalGap, lastAudioAt - last) }
+            lastPacketArrival = lastAudioAt
             lastAudioSeq = packet.header.seq
             packetsThisSecond += 1
             bytesThisSecond += bytes
@@ -283,7 +294,11 @@ public final class Receiver {
         n.schedule(deadline: .now() + 0.02, repeating: 0.02, leeway: .milliseconds(5))
         n.setEventHandler { [weak self] in
             // Keeps a dozing Wi-Fi radio awake; pointless (and costs data) on cellular.
-            guard let self, !self.onCellular, case .subscribed = self.state, let c = self.connection else { return }
+            guard let self else { return }
+            let t = self.now()
+            if let last = self.lastTimerFire { self.windowTimerGap = max(self.windowTimerGap, t - last) }
+            self.lastTimerFire = t
+            guard !self.onCellular, case .subscribed = self.state, let c = self.connection else { return }
             c.send(content: self.nudgePacket, completion: .idempotent)
         }
         n.resume()
@@ -367,6 +382,11 @@ public final class Receiver {
         stats.estimatedLatencyMs = Int(js.depthMs)
         stats.callbackFrames = Int(sink.maxCallbackFrames.load())
         stats.arrivalGapMs = Int(pump?.recentGapMs ?? 0)
+        if tickCount % 40 == 0 {
+            stats.maxArrivalGapMs10s = Int(windowArrivalGap * 1000)
+            stats.maxTimerGapMs10s = Int(windowTimerGap * 1000)
+            windowArrivalGap = 0; windowTimerGap = 0
+        }
         if case .subscribed = state, let c = connection {
             send(.keepalive(lastSeqReceived: lastAudioSeq, lossPermille: UInt16(clamping: permille),
                             bufferMs: UInt16(clamping: stats.bufferMs)), over: c)

@@ -64,6 +64,7 @@ public final class Sender {
     public let lastAudibleUptimeNs = AtomicUInt64()
     private var lastControlsFlag: Bool?
     private var statusTicks = 0
+    private var nudgeLogTicks = 0
 
     public private(set) var stats = Stats()
     public let config: Config
@@ -75,6 +76,11 @@ public final class Sender {
         var bufferMs = 0
         var lossPermille = 0
         var holdHeadphones = false
+        /// Phone → Mac NUDGE timing (sent every 20 ms): shows whether the phone kept sending
+        /// while its audio arrived in bursts (diagnostics, logged every 10 s).
+        var lastNudge: TimeInterval?
+        var maxNudgeGapMs = 0.0
+        var nudges = 0
         init(address: sockaddr_storage, name: String) { self.address = address; self.name = name }
     }
 
@@ -221,6 +227,15 @@ public final class Sender {
                 s.lastSeen = Date(); s.lossPermille = Int(loss); s.bufferMs = Int(buf)
             }
             lock.unlock()
+        case .nudge:
+            let t = ProcessInfo.processInfo.systemUptime
+            lock.lock()
+            if let s = subscribers[key] {
+                if let last = s.lastNudge { s.maxNudgeGapMs = max(s.maxNudgeGapMs, (t - last) * 1000) }
+                s.lastNudge = t
+                s.nudges += 1
+            }
+            lock.unlock()
         case .bye:
             remove(key: key, reason: "bye")
         case .control(let cmd) where !cmd.isMediaKey:
@@ -294,6 +309,15 @@ public final class Sender {
                 lastControlsFlag = available
                 sendStatus()
             }
+        }
+        nudgeLogTicks += 1
+        if nudgeLogTicks % 10 == 0 {
+            lock.lock()
+            for s in subscribers.values where s.nudges > 0 {
+                log.notice("nudges from \(s.name, privacy: .public): \(s.nudges) in 10 s, max gap \(Int(s.maxNudgeGapMs)) ms")
+                s.nudges = 0; s.maxNudgeGapMs = 0
+            }
+            lock.unlock()
         }
         let cutoff = Date().addingTimeInterval(-Constants.subscriberTimeout)
         lock.lock()

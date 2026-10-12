@@ -328,8 +328,11 @@ public final class JitterBuffer {
         guard let last = lastArrival else { lastGapUpdate = now; return }
         decayGapPeak(now: now)
         let gapMs = (now - last) * 1000
-        // Gaps of a second or more are outages (handled by stall/re-prime), not jitter.
-        guard gapMs < config.stallResetSeconds * 1000 else { return }
+        // Gaps of a second or more are outages (handled by stall/re-prime), not jitter. So are
+        // gaps longer than the ceiling: no allowed target could cover them, and counting them
+        // pinned the target at the ceiling for minutes. (A locked iPhone's Wi-Fi goes silent for
+        // ~0.5 s every minute or two, e.g. scanning for access points.)
+        guard gapMs < config.stallResetSeconds * 1000, gapMs <= config.maxTargetMs else { return }
         if gapMs > gapPeakMs { gapPeakMs = gapMs }
         let wanted = min(config.maxTargetMs, gapPeakMs + config.gapMarginMs)
         if wanted > stats.targetMs {

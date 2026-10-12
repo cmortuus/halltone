@@ -181,7 +181,7 @@ final class AppModel: ObservableObject {
             Task { @MainActor in
                 self?.stats = s
                 if s.state.isActive, Self.shouldLogStats() {
-                    diag("stats buf=\(s.bufferMs)/\(s.targetMs) loss=\(s.lossPercent)% pps=\(s.packetsPerSecond) under=\(s.underruns) cb=\(s.callbackFrames) gap=\(s.arrivalGapMs) engine=\(self?.playback.engine.isRunning ?? false)")
+                    diag("stats buf=\(s.bufferMs)/\(s.targetMs) loss=\(s.lossPercent)% pps=\(s.packetsPerSecond) under=\(s.underruns) cb=\(s.callbackFrames) gap=\(s.arrivalGapMs) maxgap10s=\(s.maxArrivalGapMs10s) timergap10s=\(s.maxTimerGapMs10s) bg=\(UIApplication.shared.applicationState == .background) engine=\(self?.playback.engine.isRunning ?? false)")
                 }
             }
         }
