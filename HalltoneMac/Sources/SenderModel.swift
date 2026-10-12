@@ -25,6 +25,9 @@ final class SenderModel: ObservableObject {
     @Published private(set) var startError: String?
     /// Whether headphone/lock-screen controls work (Accessibility permission granted).
     @Published private(set) var controlsEnabled = MediaKeys.isTrusted
+    /// A listening phone asked to keep its headphones (see HeadphoneGuard).
+    @Published private(set) var holdingHeadphones = false
+    private let headphoneGuard = HeadphoneGuard()
     private var permissionTimer: Timer?
     var panelVisible = false {
         didSet {
@@ -94,6 +97,15 @@ final class SenderModel: ObservableObject {
             MediaKeys.send(cmd)
         }
         s.controlsAvailable = { MediaKeys.isTrusted }
+        s.canHoldHeadphones = { HeadphoneGuard.available }
+        s.onHoldHeadphones = { [weak self] on in
+            DispatchQueue.main.async {
+                self?.headphoneGuard.holding = on
+                self?.holdingHeadphones = on
+            }
+        }
+        let audible = s.lastAudibleUptimeNs
+        headphoneGuard.lastAudibleUptimeNs = { audible.load() }
         do {
             try s.start()
             startError = nil
@@ -105,6 +117,8 @@ final class SenderModel: ObservableObject {
     }
 
     func restart() {
+        headphoneGuard.holding = false
+        holdingHeadphones = false
         sender?.stop()
         sender = nil
         start()

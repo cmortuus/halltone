@@ -29,6 +29,13 @@ public enum ControlCommand: UInt8 {
     case playPause = 1
     case next = 2
     case previous = 3
+    /// "Keep headphones on this iPhone" on/off. The phone repeats its current choice every few
+    /// seconds (UDP); a Mac that doesn't know these drops them.
+    case holdHeadphonesOn = 4
+    case holdHeadphonesOff = 5
+
+    /// The media-key commands (as opposed to settings like holdHeadphones*).
+    public var isMediaKey: Bool { rawValue <= 3 }
 }
 
 /// Bits of the STATUS message's `flags` byte.
@@ -39,6 +46,8 @@ public struct StatusFlags: OptionSet, Equatable {
     public static let controlsAvailable = StatusFlags(rawValue: 1 << 0)
     /// The most recent CONTROL could not be carried out (permission missing).
     public static let lastControlFailed = StatusFlags(rawValue: 1 << 1)
+    /// The Mac supports keeping headphones on the phone (holdHeadphones* commands).
+    public static let canHoldHeadphones = StatusFlags(rawValue: 1 << 2)
 }
 
 public enum NakReason: UInt8 {

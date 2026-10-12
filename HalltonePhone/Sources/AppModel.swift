@@ -98,6 +98,7 @@ final class AppModel: ObservableObject {
         static let autoConnect = "autoConnect"
         static let lastMac = "lastMac"
         static let latencyMode = "latencyMode"
+        static let keepHeadphones = "keepHeadphones"
         /// [Mac id: "host:port"]: last advertised address of each Bonjour Mac.
         static let knownAddresses = "knownAddresses"
     }
@@ -114,6 +115,15 @@ final class AppModel: ObservableObject {
             defaults.set(latencyMode.rawValue, forKey: Key.latencyMode)
             receiver.latencyMode = latencyMode
             diag("latency mode: \(latencyMode.rawValue)")
+        }
+    }
+    /// Ask the Mac not to take the headphones back while this phone listens (and to resume
+    /// playback if moving them paused it).
+    @Published var keepHeadphones: Bool {
+        didSet {
+            defaults.set(keepHeadphones, forKey: Key.keepHeadphones)
+            receiver.holdHeadphones = keepHeadphones
+            diag("keep headphones on iPhone: \(keepHeadphones)")
         }
     }
     @Published var pairingPrompt: MacEntry?
@@ -156,7 +166,9 @@ final class AppModel: ObservableObject {
         autoConnect = defaults.object(forKey: Key.autoConnect) as? Bool ?? true
         knownAddresses = defaults.dictionary(forKey: Key.knownAddresses) as? [String: String] ?? [:]
         latencyMode = defaults.string(forKey: Key.latencyMode).flatMap(LatencyMode.init(rawValue:)) ?? .balanced
+        keepHeadphones = defaults.bool(forKey: Key.keepHeadphones)
         receiver.latencyMode = latencyMode
+        receiver.holdHeadphones = keepHeadphones
         if let data = defaults.data(forKey: Key.manual), let list = try? JSONDecoder().decode([MacEntry].self, from: data) {
             manual = list
         }

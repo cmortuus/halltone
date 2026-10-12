@@ -49,6 +49,7 @@ enum MediaKeys {
         case .playPause: key = play
         case .next: key = next
         case .previous: key = previous
+        case .holdHeadphonesOn, .holdHeadphonesOff: return false
         }
         post(key, down: true)
         post(key, down: false)

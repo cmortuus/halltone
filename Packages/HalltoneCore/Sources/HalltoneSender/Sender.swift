@@ -53,6 +53,15 @@ public final class Sender {
     public var onControl: ((ControlCommand) -> Bool)?
     /// Whether CONTROL commands can currently be carried out. nil: don't send STATUS at all.
     public var controlsAvailable: (() -> Bool)?
+    /// Called on the sender's queue when "keep headphones on the phone" turns on or off: on while
+    /// any subscribed phone asks for it.
+    public var onHoldHeadphones: ((Bool) -> Void)?
+    /// Whether this Mac can keep headphones on the phone (reported in STATUS).
+    public var canHoldHeadphones: (() -> Bool)?
+    private var holdingHeadphones = false
+    /// Uptime (ns) of the last captured frame that wasn't near-silent. Lets the app tell whether
+    /// something was playing, and whether it stopped (e.g. paused when headphones disconnected).
+    public let lastAudibleUptimeNs = AtomicUInt64()
     private var lastControlsFlag: Bool?
     private var statusTicks = 0
 
@@ -65,6 +74,7 @@ public final class Sender {
         var lastSeen = Date()
         var bufferMs = 0
         var lossPermille = 0
+        var holdHeadphones = false
         init(address: sockaddr_storage, name: String) { self.address = address; self.name = name }
     }
 
@@ -213,6 +223,11 @@ public final class Sender {
             lock.unlock()
         case .bye:
             remove(key: key, reason: "bye")
+        case .control(let cmd) where !cmd.isMediaKey:
+            lock.lock()
+            subscribers[key]?.holdHeadphones = cmd == .holdHeadphonesOn
+            lock.unlock()
+            updateHoldHeadphones()
         case .control(let cmd):
             let ok = onControl?(cmd) ?? false
             if !ok { sendStatus(to: [address], lastControlFailed: true) }
@@ -227,6 +242,7 @@ public final class Sender {
         targets = subscribers.values.map(\.address)
         let empty = subscribers.isEmpty
         lock.unlock()
+        updateHoldHeadphones()
         if let removed {
             log.notice("subscriber left: \(removed.name, privacy: .public) (\(reason, privacy: .public))")
             if empty { stopCapture() }
@@ -249,9 +265,22 @@ public final class Sender {
         var flags: StatusFlags = []
         if available() { flags.insert(.controlsAvailable) }
         if lastControlFailed { flags.insert(.lastControlFailed) }
+        if canHoldHeadphones?() == true { flags.insert(.canHoldHeadphones) }
         let targetsNow: [sockaddr_storage]
         if let addresses { targetsNow = addresses } else { lock.lock(); targetsNow = targets; lock.unlock() }
         for a in targetsNow { sendControl(.status(flags: flags), to: a) }
+    }
+
+    private func updateHoldHeadphones() {
+        lock.lock()
+        let want = subscribers.values.contains { $0.holdHeadphones }
+        lock.unlock()
+        queue.async { [self] in
+            guard want != holdingHeadphones else { return }
+            holdingHeadphones = want
+            log.notice("keep headphones on phone: \(want)")
+            onHoldHeadphones?(want)
+        }
     }
 
     private func tick() {
@@ -467,6 +496,9 @@ public final class Sender {
             var sentAny = false
             while encoding, srcRing.availableToRead >= frame * ch {
                 srcRing.read(into: pcm, count: frame * ch)
+                var peak: Float = 0
+                for i in 0..<(frame * ch) { peak = max(peak, abs(pcm[i])) }
+                if peak > 0.001 { lastAudibleUptimeNs.store(DispatchTime.now().uptimeNanoseconds) }
                 sendFrame(pcm)
                 sentAny = true
                 lastRealFrame = Date()

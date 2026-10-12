@@ -78,6 +78,15 @@ struct ContentView: View {
                     }
                 }
                 Section {
+                    Toggle("Keep headphones on this iPhone", isOn: $model.keepHeadphones)
+                } footer: {
+                    if model.isActive, model.stats.macCanHoldHeadphones == false {
+                        Text("Update Halltone on your Mac to use this.")
+                    } else {
+                        Text("While you're listening, your Mac won't take your AirPods back when it plays something, and if moving them to this iPhone paused your video, it starts again by itself.")
+                    }
+                }
+                Section {
                     Picker("Latency", selection: $model.latencyMode) {
                         Text("Lowest").tag(LatencyMode.lowest)
                         Text("Balanced").tag(LatencyMode.balanced)

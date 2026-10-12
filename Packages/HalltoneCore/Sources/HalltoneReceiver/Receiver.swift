@@ -45,6 +45,8 @@ public final class Receiver {
         /// From the Mac's STATUS: whether headphone/lock-screen controls work. nil = unknown
         /// (older Mac app, or no STATUS yet).
         public var macControlsAvailable: Bool?
+        /// From the Mac's STATUS: whether it can keep headphones on this phone. nil = unknown.
+        public var macCanHoldHeadphones: Bool?
         public init() {}
     }
 
@@ -63,6 +65,17 @@ public final class Receiver {
     /// While the phone is on cellular a larger cellular buffer is used regardless.
     public var latencyMode: LatencyMode = .balanced {
         didSet { queue.async { [self] in applyEffectiveConfig() } }
+    }
+
+    /// Ask the Mac to keep headphones on this phone (stop it taking them back while listening).
+    /// Sent on subscribe, on change, and repeated every few seconds since UDP can drop it.
+    public var holdHeadphones = false {
+        didSet { queue.async { [self] in sendHoldHeadphones() } }
+    }
+
+    private func sendHoldHeadphones() {
+        guard case .subscribed = state, let c = connection else { return }
+        send(.control(command: holdHeadphones ? .holdHeadphonesOn : .holdHeadphonesOff), over: c)
     }
 
     /// True while the phone has no Wi-Fi or wired path (reaching the Mac over cellular/VPN).
@@ -231,6 +244,7 @@ public final class Receiver {
             stats.macName = macName
             if case .subscribed = state {} else { log.info("subscribed to \(macName, privacy: .public) (\(String(describing: codec), privacy: .public), \(frameSamples) spf)") }
             state = .subscribed(macName: macName)
+            sendHoldHeadphones()
             lastAudioAt = now()
         case .subscribeNak(let reason):
             let text = reason == NakReason.badPairingCode.rawValue ? "wrong pairing code" : "rejected (\(reason))"
@@ -246,7 +260,12 @@ public final class Receiver {
             pump?.push(session: packet.header.session, samplePos: samplePos, payload: payload)
         case .status(let flags):
             let available = flags.contains(.controlsAvailable)
-            if stats.macControlsAvailable != available { stats.macControlsAvailable = available; publish() }
+            let canHold = flags.contains(.canHoldHeadphones)
+            if stats.macControlsAvailable != available || stats.macCanHoldHeadphones != canHold {
+                stats.macControlsAvailable = available
+                stats.macCanHoldHeadphones = canHold
+                publish()
+            }
             onMacStatus?(flags)
         case .bye:
             log.notice("sender said bye")
@@ -351,6 +370,7 @@ public final class Receiver {
         if case .subscribed = state, let c = connection {
             send(.keepalive(lastSeqReceived: lastAudioSeq, lossPermille: UInt16(clamping: permille),
                             bufferMs: UInt16(clamping: stats.bufferMs)), over: c)
+            if tickCount % 20 == 0 { sendHoldHeadphones() }
         }
         publish()
     }

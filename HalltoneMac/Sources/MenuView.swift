@@ -41,6 +41,11 @@ struct MenuView: View {
                     Button("Turn On…") { model.enableHeadphoneControls() }
                 }
             }
+            if model.holdingHeadphones {
+                Label("Keeping headphones on iPhone", systemImage: "lock.iphone")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .help("A listening iPhone asked this Mac not to take its headphones back. Turn it off in Halltone on the iPhone.")
+            }
             Toggle("Mute Mac speakers while streaming", isOn: $model.muteWhileStreaming)
             Picker("Codec", selection: $model.codec) {
                 Text("Opus (128 kbps)").tag(CodecID.opus)

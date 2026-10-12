@@ -14,7 +14,7 @@ private let log = Logger(subsystem: Constants.logSubsystem, category: "SilenceKe
 /// The silence goes to a built-in (or other wired) output, never the default device: if the
 /// default output is Bluetooth headphones that the user has moved to the iPhone, holding an
 /// active stream to them from the Mac makes the two devices fight over the headphones.
-final class SilenceKeeper {
+public final class SilenceKeeper {
     private var engine: AVAudioEngine?
     private var node: AVAudioSourceNode?
 
@@ -64,7 +64,7 @@ final class SilenceKeeper {
 
     /// First output device that is built in, else any wired (non-Bluetooth, non-virtual,
     /// non-aggregate, non-AirPlay) output.
-    static func quietOutputDevice() -> (id: AudioDeviceID, name: String)? {
+    public static func quietOutputDevice() -> (id: AudioDeviceID, name: String)? {
         let sys = AudioObjectID(kAudioObjectSystemObject)
         var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
                                               mScope: kAudioObjectPropertyScopeGlobal,
