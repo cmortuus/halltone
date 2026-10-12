@@ -202,6 +202,33 @@ extension JitterSim.Result: CustomStringConvertible {
         #expect(r.target >= 250)
     }
 
+    /// Regression: a target above 1 s used to trip the 1 s "stream jump" reset on every packet,
+    /// so the buffer never primed again and playback went silent while packets kept arriving.
+    @Test func targetAboveOneSecondStillPlays() {
+        var c = JitterBuffer.Config.preset(.stable, frameSamples: 480)
+        c.initialTargetMs = 1200
+        c.minTargetMs = 1200
+        let r = JitterSim(config: c, seconds: 6).run()
+        #expect(r.stats.resets == 0)
+        #expect(r.frames > 400, "frames \(r.frames)")
+    }
+
+    /// Regression: render underruns while packets are queued (decode thread late, e.g. screen
+    /// locked) used to raise the network target by 20 ms each, ratcheting Stable mode past 1 s.
+    @Test func lateDecodeUnderrunDoesNotRaiseTarget() {
+        let jb = JitterBuffer(config: .preset(.stable, frameSamples: 480))
+        for i in 0..<40 { jb.push(session: 1, samplePos: UInt64(i * 480), payload: Data(), now: Double(i) * 0.01) }
+        #expect(jb.pull(playoutAhead: 0, now: 0.4) != .wait)
+        for k in 0..<20 { jb.reportUnderrun(now: 0.5 + Double(k)) }
+        #expect(jb.stats.underruns == 20)
+        #expect(jb.stats.targetMs == 300)
+        // A genuinely starved buffer still raises it.
+        while jb.pull(playoutAhead: 0, now: 30) != .wait {}
+        let before = jb.stats.targetMs
+        jb.reportUnderrun(now: 31)
+        #expect(jb.stats.targetMs == before + 20)
+    }
+
     @Test func cellularPresetRidesOutHeavyJitter() {
         // Cellular-like: up to 300 ms random delay per packet, 2% loss.
         let r = JitterSim(config: .cellular(frameSamples: 480), loss: 0.02, jitterMs: 300, seconds: 60, seed: 11).run()

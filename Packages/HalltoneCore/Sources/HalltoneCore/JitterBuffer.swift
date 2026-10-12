@@ -126,7 +126,12 @@ public final class JitterBuffer {
         stats.received += 1
         noteArrival(now: now)
 
-        let jump = UInt64(config.resetJumpSeconds * config.sampleRate)
+        // A deep buffer legitimately holds packets up to maxTarget (plus catch-up slack) ahead of
+        // the play head; only a jump well beyond that is a new stream. With a fixed 1 s limit, a
+        // target above 1 s reset on every packet and could never prime again: permanent silence.
+        let jumpSeconds = max(config.resetJumpSeconds,
+                              (config.maxTargetMs + config.catchUpMarginMs) / 1000 + 1)
+        let jump = UInt64(jumpSeconds * config.sampleRate)
         if hasExpected {
             if samplePos + jump < expectedPos || samplePos > expectedPos + jump {
                 reset(now: now)
@@ -255,9 +260,16 @@ public final class JitterBuffer {
         return .conceal(pos: pos, next: next)
     }
 
-    /// The render side ran dry. Raises the target (rate-limited).
+    /// Audio still queued here but not yet decoded, in samples.
+    public var queuedSamples: Int { bufferedSpan() }
+
+    /// The render side ran dry. Raises the target (rate-limited) only when this buffer was itself
+    /// empty, i.e. the network fell behind. If packets were queued, the decode thread was simply
+    /// late (screen lock, CPU throttling) and a deeper network buffer would not have helped;
+    /// raising anyway ratcheted the target past a second over a few minutes.
     public func reportUnderrun(now: TimeInterval) {
         stats.underruns += 1
+        guard queuedSamples < 2 * config.frameSamples else { return }
         lastUnderrunTime = now
         if now - lastRaiseTime >= 0.5 {
             setTarget(ms: stats.targetMs + config.raiseStepMs)

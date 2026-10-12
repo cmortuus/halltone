@@ -16,6 +16,9 @@ final class DecodePump {
     private let frame: Int
     /// Minimum decoded-ahead depth regardless of the output's callback size (~20 ms).
     private let baseLowWater: Int
+    /// Extra decoded-ahead slack, grown when the render side runs dry while packets are queued
+    /// (this thread was late, e.g. throttled with the screen locked). Capped at 100 ms.
+    private var extraLowWater = 0
     private var out: [Float]
     private var tmp: [Float]
     private var lastOut: [Float]
@@ -43,6 +46,7 @@ final class DecodePump {
     func start() {
         guard !running else { return }
         running = true
+        extraLowWater = 0
         _ = sink.underruns.exchange(0)
         let t = Thread { [self] in loop() }
         t.qualityOfService = .userInteractive
@@ -97,10 +101,15 @@ final class DecodePump {
             lock.lock()
             let t = now()
             let under = sink.underruns.exchange(0)
-            if under > 0, jitter.stats.primed { jitter.reportUnderrun(now: t) }
+            if under > 0, jitter.stats.primed {
+                if jitter.queuedSamples >= 2 * frame {
+                    extraLowWater = min(extraLowWater + frame, Int(Constants.sampleRate / 10))
+                }
+                jitter.reportUnderrun(now: t)
+            }
             var wrote = false
             let callback = Int(sink.maxCallbackFrames.load())
-            let lowWaterSamples = max(baseLowWater, callback + frame)
+            let lowWaterSamples = max(baseLowWater, callback + frame) + extraLowWater
             while running, sink.ring.availableToRead < lowWaterSamples * ch {
                 let ahead = sink.ring.availableToRead / ch
                 let pull = jitter.pull(playoutAhead: ahead, now: t)
