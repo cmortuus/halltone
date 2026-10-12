@@ -168,7 +168,7 @@ struct ContentView: View {
 
     private var latencyFooter: String {
         switch model.latencyMode {
-        case .lowest: return "Closest to real time, for watching video on the Mac. Weak Wi‑Fi causes brief blips instead of delay."
+        case .lowest: return "Closest to real time, for watching video on the Mac. Uses only as much delay as your Wi‑Fi needs to play smoothly."
         case .balanced: return "Adapts to your Wi‑Fi: no more delay than it needs to avoid dropouts."
         case .stable: return "About a third of a second behind, but rides out moving between Wi‑Fi access points and weak spots. Best for music and podcasts while you move around."
         }

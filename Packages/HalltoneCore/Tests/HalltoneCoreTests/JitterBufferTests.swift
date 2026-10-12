@@ -188,12 +188,62 @@ extension JitterSim.Result: CustomStringConvertible {
         #expect(r.target >= 250 && r.target <= 320)
     }
 
-    @Test func lowestModeConcealsInsteadOfWaiting() {
-        let r = burstRun(JitterBuffer(config: .preset(.lowest, frameSamples: 480)))
-        print("bursts/lowest: target \(r.target) underruns after warm-up \(r.underruns) conceals \(r.conceals)")
+    @Test func concealGapsKeepsLatencyCapped() {
+        var c = JitterBuffer.Config.preset(.lowest, frameSamples: 480)
+        c.maxTargetMs = 150
+        c.concealGaps = true
+        let r = burstRun(JitterBuffer(config: c))
+        print("bursts/conceal: target \(r.target) underruns after warm-up \(r.underruns) conceals \(r.conceals)")
         #expect(r.underruns == 0)        // the render side never starves...
         #expect(r.target <= 150)         // ...and latency stays capped
         #expect(r.conceals > 0)          // gaps were smoothed over with concealment
+    }
+
+    /// Regression: Lowest used to cap at 150 ms and conceal longer gaps, which on Wi-Fi with
+    /// irregular power-save bursts (every 80-300 ms) meant hundreds of blips and skips a minute.
+    @Test func lowestModeIsCleanOnIrregularWifiBursts() {
+        for (period, spread) in [(0.1, 0.0), (0.08, 0.08), (0.1, 0.1), (0.1, 0.2)] {
+            let lowest = clumpRun(.preset(.lowest, frameSamples: 480), period: period, spread: spread)
+            let balanced = clumpRun(.preset(.balanced, frameSamples: 480), period: period, spread: spread)
+            print("clumps \(period)+\(spread): lowest \(lowest) balanced \(balanced)")
+            #expect(lowest.conceals == 0 && lowest.underruns == 0)
+            #expect(lowest.target <= balanced.target)
+        }
+    }
+
+    /// Packets arrive in clumps every `period` + random(0..<spread) s, as from a phone in Wi-Fi
+    /// power save; a 256-frame render callback. Counts after a 5 s warm-up.
+    private func clumpRun(_ c: JitterBuffer.Config, period: Double, spread: Double) -> (target: Double, conceals: Int, underruns: Int) {
+        var rng = SplitMix(seed: 7)
+        let jb = JitterBuffer(config: c)
+        let frame = 480, frameDur = 0.01, cb = 256
+        var ring = 0, t = 0.0, nextRender = 0.0, sent = 0, lastRelease = 0.0, nextGap = period
+        var held: [UInt64] = []
+        var conceals = 0, underruns = 0
+        while t < 60 {
+            while Double(sent) * frameDur <= t { held.append(UInt64(sent * frame)); sent += 1 }
+            if t - lastRelease >= nextGap {
+                for p in held { jb.push(session: 1, samplePos: p, payload: Data([1]), now: t) }
+                held.removeAll(); lastRelease = t; nextGap = period + rng.nextDouble() * spread
+            }
+            pump: while ring < cb + frame {
+                switch jb.pull(playoutAhead: ring, now: t) {
+                case .wait: break pump
+                case .conceal: ring += frame; if t > 5 { conceals += 1 }
+                default: ring += frame
+                }
+            }
+            if t >= nextRender {
+                if ring >= cb { ring -= cb } else {
+                    ring = 0
+                    if jb.stats.primed { jb.reportUnderrun(now: t) }
+                    if t > 5 { underruns += 1 }
+                }
+                nextRender += Double(cb) / 48000
+            }
+            t += 0.001
+        }
+        return (jb.stats.targetMs, conceals, underruns)
     }
 
     @Test func stableModeKeepsABigCushion() {

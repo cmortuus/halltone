@@ -368,7 +368,9 @@ public final class JitterBuffer {
 
 /// User-facing latency/robustness trade-off.
 public enum LatencyMode: String, CaseIterable, Codable {
-    /// Smallest buffer; network gaps are concealed (brief blips) rather than waited out.
+    /// Smallest buffer that still covers the gaps the network actually has: tighter margin and
+    /// faster shrink than balanced. (Concealing gaps instead of waiting sounded awful on Wi-Fi
+    /// with power-save bursts: every gap past a fixed cap became a blip plus a skip.)
     case lowest
     /// Adapts to the network: covers the gaps it actually sees. Default.
     case balanced
@@ -383,13 +385,11 @@ extension JitterBuffer.Config {
         case .lowest:
             c.initialTargetMs = 40
             c.minTargetMs = 20
-            c.maxTargetMs = 150
+            c.maxTargetMs = 250
             c.gapMarginMs = 15
-            c.gapHalfLifeSeconds = 15
+            c.gapHalfLifeSeconds = 20
             c.raiseStepMs = 10
             c.catchUpMarginMs = 40
-            c.concealGaps = true
-            c.maxConcealMs = 300
         case .balanced:
             break
         case .stable:
