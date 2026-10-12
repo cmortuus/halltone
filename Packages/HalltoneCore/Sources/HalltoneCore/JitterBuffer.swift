@@ -375,9 +375,10 @@ public enum LatencyMode: String, CaseIterable, Codable {
     /// faster shrink than balanced. (Concealing gaps instead of waiting sounded awful on Wi-Fi
     /// with power-save bursts: every gap past a fixed cap became a blip plus a skip.)
     case lowest
-    /// Adapts to the network: covers the gaps it actually sees. Default.
+    /// Adapts to the network: covers the gaps it actually sees.
     case balanced
-    /// Big buffer that rides out Wi-Fi access-point handoffs and dead spots without dropouts.
+    /// Big buffer that rides out Wi-Fi access-point handoffs, dead spots and a locked phone's
+    /// Wi-Fi blackouts without dropouts. Default.
     case stable
 }
 

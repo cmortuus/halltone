@@ -165,7 +165,7 @@ final class AppModel: ObservableObject {
         receiver = Receiver(sink: playback)
         autoConnect = defaults.object(forKey: Key.autoConnect) as? Bool ?? true
         knownAddresses = defaults.dictionary(forKey: Key.knownAddresses) as? [String: String] ?? [:]
-        latencyMode = defaults.string(forKey: Key.latencyMode).flatMap(LatencyMode.init(rawValue:)) ?? .balanced
+        latencyMode = defaults.string(forKey: Key.latencyMode).flatMap(LatencyMode.init(rawValue:)) ?? .stable
         keepHeadphones = defaults.bool(forKey: Key.keepHeadphones)
         receiver.latencyMode = latencyMode
         receiver.holdHeadphones = keepHeadphones
@@ -273,6 +273,7 @@ final class AppModel: ObservableObject {
         autoConnectPending = nil
         paused = false
         pauseTask?.cancel()
+        configureAudioSession()
         activateAudioSession()
         receiver.connect(to: mac.endpoint, pairingCode: code, deviceName: UIDevice.current.name)
         updateNowPlaying(macName: mac.name)
@@ -286,6 +287,7 @@ final class AppModel: ObservableObject {
         receiver.disconnect()
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        configureAudioSession()
     }
 
     func toggle() {
@@ -388,10 +390,13 @@ final class AppModel: ObservableObject {
 
     // MARK: - Audio session
 
-    private func configureAudioSession() {
+    /// `mixable` while the headphones are away: iOS lets a backgrounded app reactivate a mixable
+    /// session (not an exclusive one), and playing (silence) keeps the app running, so the Mac
+    /// subscription and "keep headphones" hold survive until they come back.
+    private func configureAudioSession(mixable: Bool = false) {
         let s = AVAudioSession.sharedInstance()
         do {
-            try s.setCategory(.playback, mode: .default, options: [])
+            try s.setCategory(.playback, mode: .default, options: mixable ? [.mixWithOthers] : [])
             try s.setPreferredSampleRate(Constants.sampleRate)
             try s.setPreferredIOBufferDuration(0.005)
         } catch {
@@ -427,8 +432,16 @@ final class AppModel: ObservableObject {
               let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
         switch type {
         case .began:
-            diag("interruption began")
+            let reason = (n.userInfo?[AVAudioSessionInterruptionReasonKey] as? UInt)
+                .flatMap(AVAudioSession.InterruptionReason.init(rawValue:))
+            diag("interruption began (reason \(reason.map { String($0.rawValue) } ?? "none"))")
             playback.muted = true
+            // Headphones taken by another device (e.g. the Mac): without audio running iOS
+            // suspends us, the Mac drops the subscription and nothing brings them back.
+            if isActive, paused || reason == .routeDisconnected {
+                if !paused { pauseForMissingHeadphones() }
+                keepAliveWhileHeadphonesAway()
+            }
         case .ended:
             let opts = AVAudioSession.InterruptionOptions(rawValue: n.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0)
             diag("interruption ended (resume=\(opts.contains(.shouldResume)))")
@@ -445,16 +458,7 @@ final class AppModel: ObservableObject {
         switch reason {
         case .oldDeviceUnavailable:
             guard isActive else { return }
-            diag("output device went away; pausing (subscription kept for 60 s)")
-            paused = true
-            playback.muted = true
-            pauseTask?.cancel()
-            pauseTask = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(60))
-                guard !Task.isCancelled, let self, self.paused else { return }
-                log.notice("paused for 60 s; disconnecting")
-                self.disconnect()
-            }
+            pauseForMissingHeadphones()
         case .newDeviceAvailable:
             if paused { resume() } else if isActive, !playback.engine.isRunning { rebuildEngine(reason: "new device, engine stopped") }
         default:
@@ -463,10 +467,30 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func pauseForMissingHeadphones() {
+        diag("output device went away; pausing (subscription kept for 60 s)")
+        paused = true
+        playback.muted = true
+        pauseTask?.cancel()
+        pauseTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(60))
+            guard !Task.isCancelled, let self, self.paused else { return }
+            log.notice("paused for 60 s; disconnecting")
+            self.disconnect()
+        }
+    }
+
+    private func keepAliveWhileHeadphonesAway() {
+        diag("headphones away: keeping the app alive with a mixable session")
+        configureAudioSession(mixable: true)
+        rebuildEngine(reason: "keep alive while headphones away")
+    }
+
     func resume() {
         pauseTask?.cancel()
         paused = false
         playback.muted = false
+        configureAudioSession()
         if isActive { rebuildEngine(reason: "resume") }
     }
 
