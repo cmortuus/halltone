@@ -40,7 +40,7 @@ let package = Package(
         .target(name: "HalltoneSender", dependencies: ["HalltoneCore"]),
         // macOS + iOS: UDP subscriber, jitter-buffer feed, AVAudioEngine playback.
         .target(name: "HalltoneReceiver", dependencies: ["HalltoneCore"]),
-        .testTarget(name: "HalltoneCoreTests", dependencies: ["HalltoneCore"]),
+        .testTarget(name: "HalltoneCoreTests", dependencies: ["HalltoneCore", "HalltoneReceiver"]),
     ],
     swiftLanguageVersions: [.v5]
 )

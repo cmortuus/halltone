@@ -351,8 +351,8 @@ public final class Receiver {
 
     private func everySecond() {
         let js = pump?.stats ?? JitterBuffer.Stats()
-        let lost = js.lost &- lastLost
-        let recv = js.received &- lastReceived
+        let (lost, recv) = Self.counterDeltas(lost: js.lost, received: js.received,
+                                              lastLost: lastLost, lastReceived: lastReceived)
         lastLost = js.lost; lastReceived = js.received
         let total = lost + recv
         let permille = total > 0 ? Int(lost * 1000 / total) : 0
@@ -373,6 +373,15 @@ public final class Receiver {
             if tickCount % 20 == 0 { sendHoldHeadphones() }
         }
         publish()
+    }
+
+    /// Per-second packet counts from the jitter buffer's running totals. A reconnect (or a
+    /// disconnect, which leaves no pump) restarts those totals at zero; wrapping the subtraction
+    /// then made the sum overflow and crash the app.
+    static func counterDeltas(lost: UInt64, received: UInt64, lastLost: UInt64,
+                              lastReceived: UInt64) -> (lost: UInt64, received: UInt64) {
+        guard lost >= lastLost, received >= lastReceived else { return (lost, received) }
+        return (lost - lastLost, received - lastReceived)
     }
 
     private func publish() { onStats?(stats) }
