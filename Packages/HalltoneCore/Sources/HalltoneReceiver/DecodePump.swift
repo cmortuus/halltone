@@ -93,6 +93,11 @@ final class DecodePump {
         return jitter.stats
     }
 
+    var queuedSamples: Int {
+        lock.lock(); defer { lock.unlock() }
+        return jitter.queuedSamples
+    }
+
     var recentGapMs: Double {
         lock.lock(); defer { lock.unlock() }
         return jitter.recentGapMs

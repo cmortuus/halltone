@@ -80,6 +80,17 @@ func runReceive(target: String, pairingCode: UInt32, name: String, wav: URL?, se
         }
     }
     receiver.connect(to: endpoint, pairingCode: pairingCode, deviceName: name)
+    // Test hook: disconnect and reconnect partway through (as the phone's Disconnect/Connect).
+    if let after = ProcessInfo.processInfo.environment["HALLTONE_RECONNECT_AFTER"].flatMap(Double.init) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + after) {
+            print("[recv] disconnecting (test)"); fflush(stdout)
+            receiver.disconnect()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                print("[recv] reconnecting (test)"); fflush(stdout)
+                receiver.connect(to: endpoint, pairingCode: pairingCode, deviceName: name)
+            }
+        }
+    }
     if let seconds {
         RunLoop.main.run(until: Date().addingTimeInterval(seconds))
     } else {

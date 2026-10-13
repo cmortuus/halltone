@@ -187,7 +187,7 @@ final class AppModel: ObservableObject {
                 self?.updateProximity()
                 if s.state.isActive, Self.shouldLogStats() {
                     let rssi = self?.proximity.rssi.map { String(Int($0)) } ?? "-"
-                    diag("stats atMac=\(s.atMac) near=\(s.phoneNearMac.map(String.init) ?? "-") rssi=\(rssi) active=\(s.macUserActive.map(String.init) ?? "-") input=\(s.macInputRecent.map(String.init) ?? "-") buf=\(s.bufferMs)/\(s.targetMs) loss=\(s.lossPercent)% pps=\(s.packetsPerSecond) under=\(s.underruns) cb=\(s.callbackFrames) gap=\(s.arrivalGapMs) maxgap10s=\(s.maxArrivalGapMs10s) timergap10s=\(s.maxTimerGapMs10s) bg=\(UIApplication.shared.applicationState == .background) engine=\(self?.playback.engine.isRunning ?? false)")
+                    diag("stats atMac=\(s.atMac) near=\(s.phoneNearMac.map(String.init) ?? "-") rssi=\(rssi) active=\(s.macUserActive.map(String.init) ?? "-") input=\(s.macInputRecent.map(String.init) ?? "-") buf=\(s.bufferMs)/\(s.targetMs) loss=\(s.lossPercent)% pps=\(s.packetsPerSecond) under=\(s.underruns) cb=\(s.callbackFrames) gap=\(s.arrivalGapMs) maxgap10s=\(s.maxArrivalGapMs10s) timergap10s=\(s.maxTimerGapMs10s) bg=\(UIApplication.shared.applicationState == .background) primed=\(s.jitterPrimed) resets=\(s.jitterResets) queued=\(s.queuedMs) handoff=\(s.handoffMs) muted=\(self?.playback.muted ?? false) engine=\(self?.playback.engine.isRunning ?? false)")
                 }
             }
         }
@@ -279,6 +279,9 @@ final class AppModel: ObservableObject {
         autoConnectPending = nil
         paused = false
         pauseTask?.cancel()
+        // A previous session may have ended muted (headphones away, interruption); a muted
+        // engine never reads the hand-off ring, so the new stream would never start playing.
+        playback.muted = false
         configureAudioSession()
         activateAudioSession()
         receiver.connect(to: mac.endpoint, pairingCode: code, deviceName: UIDevice.current.name)

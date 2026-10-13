@@ -60,6 +60,12 @@ public final class Receiver {
         /// gap as long as the packet gap means iOS wasn't running us, not that the network stalled.
         public var maxArrivalGapMs10s = 0
         public var maxTimerGapMs10s = 0
+        /// Jitter buffer internals, for diagnostics: playing yet, how many resets, audio queued
+        /// but not decoded, decoded but not yet played.
+        public var jitterPrimed = false
+        public var jitterResets: UInt64 = 0
+        public var queuedMs = 0
+        public var handoffMs = 0
         public init() {}
     }
 
@@ -419,6 +425,10 @@ public final class Receiver {
         stats.estimatedLatencyMs = Int(js.depthMs)
         stats.callbackFrames = Int(sink.maxCallbackFrames.load())
         stats.arrivalGapMs = Int(pump?.recentGapMs ?? 0)
+        stats.jitterPrimed = js.primed
+        stats.jitterResets = js.resets
+        stats.queuedMs = Int(Double(pump?.queuedSamples ?? 0) * 1000 / Constants.sampleRate)
+        stats.handoffMs = Int(Double(sink.ring.availableToRead / Constants.channels) * 1000 / Constants.sampleRate)
         if tickCount % 40 == 0 {
             stats.maxArrivalGapMs10s = Int(windowArrivalGap * 1000)
             stats.maxTimerGapMs10s = Int(windowTimerGap * 1000)
