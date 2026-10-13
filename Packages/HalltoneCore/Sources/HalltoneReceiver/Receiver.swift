@@ -49,6 +49,10 @@ public final class Receiver {
         public var macCanHoldHeadphones: Bool?
         /// From the Mac's STATUS: someone is using the Mac (drives Auto latency). nil = unknown.
         public var macUserActive: Bool?
+        /// Bluetooth proximity to the Mac (see `phoneNearMac`). nil = unknown.
+        public var phoneNearMac: Bool?
+        /// What Auto latency acts on: near the Mac by Bluetooth if known, else the Mac's activity.
+        public var atMac = false
         /// Diagnostics, max over the last 10 s: longest gap between audio packets as received
         /// (raw, not the decaying estimate), and longest gap between nudge timer firings. A timer
         /// gap as long as the packet gap means iOS wasn't running us, not that the network stalled.
@@ -80,6 +84,23 @@ public final class Receiver {
         didSet { queue.async { [self] in sendHoldHeadphones() } }
     }
 
+    /// Bluetooth proximity, from the app: true near the Mac, false away, nil unknown. When known
+    /// it decides Auto latency; otherwise the Mac's "someone is using me" flag does.
+    public var phoneNearMac: Bool? {
+        didSet { queue.async { [self] in stats.phoneNearMac = phoneNearMac; updatePresence() } }
+    }
+
+    private func updatePresence() {
+        let atMac = stats.phoneNearMac ?? (stats.macUserActive == true)
+        guard atMac != stats.atMac else { return }
+        stats.atMac = atMac
+        if latencyMode == .auto, !onCellular, let pump {
+            log.notice("\(atMac ? "at" : "away from", privacy: .public) the Mac; retuning")
+            pump.retune(effectiveConfig(frameSamples: pump.jitter.frameSamples))
+        }
+        publish()
+    }
+
     private func sendHoldHeadphones() {
         guard case .subscribed = state, let c = connection else { return }
         send(.control(command: holdHeadphones ? .holdHeadphonesOn : .holdHeadphonesOff), over: c)
@@ -91,7 +112,7 @@ public final class Receiver {
     private func effectiveConfig(frameSamples: Int) -> JitterBuffer.Config {
         if onCellular { return .cellular(frameSamples: frameSamples) }
         if latencyMode == .auto {
-            return .preset(stats.macUserActive == true ? .lowest : .stable, frameSamples: frameSamples)
+            return .preset(stats.atMac ? .lowest : .stable, frameSamples: frameSamples)
         }
         return .preset(latencyMode, frameSamples: frameSamples)
     }
@@ -281,14 +302,10 @@ public final class Receiver {
             let userActive = flags.contains(.userAtMac)
             if stats.macControlsAvailable != available || stats.macCanHoldHeadphones != canHold
                 || stats.macUserActive != userActive {
-                let presenceChanged = stats.macUserActive != userActive
                 stats.macControlsAvailable = available
                 stats.macCanHoldHeadphones = canHold
                 stats.macUserActive = userActive
-                if presenceChanged, latencyMode == .auto, !onCellular, let pump {
-                    log.notice("user \(userActive ? "at" : "away from", privacy: .public) the Mac; retuning")
-                    pump.retune(effectiveConfig(frameSamples: pump.jitter.frameSamples))
-                }
+                updatePresence()
                 publish()
             }
             onMacStatus?(flags)

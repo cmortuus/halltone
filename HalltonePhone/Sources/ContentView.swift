@@ -171,11 +171,9 @@ struct ContentView: View {
         switch model.latencyMode {
         case .auto:
             let now: String
-            switch (model.isActive, model.stats.macUserActive) {
-            case (true, true?): now = " Right now: you're at your Mac, so it's close to real time."
-            case (true, false?): now = " Right now: away from your Mac, so extra buffer for smooth audio."
-            default: now = ""
-            }
+            if !model.isActive { now = "" }
+            else if model.stats.atMac { now = " Right now: you're at your Mac, so it's close to real time." }
+            else { now = " Right now: away from your Mac, so extra buffer for smooth audio." }
             return "Smooth, dropout-free audio while you're away from your Mac; close to real time when you're using it." + now
         case .lowest: return "Closest to real time, for watching video on the Mac. Uses only as much delay as your Wi‑Fi needs to play smoothly."
         case .balanced: return "Adapts to your Wi‑Fi: no more delay than it needs to avoid dropouts."

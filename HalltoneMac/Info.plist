@@ -29,7 +29,7 @@
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>Halltone captures what your Mac is playing so it can stream it to your iPhone.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>While your iPhone is listening, Halltone can send your headphones back to it when this Mac takes them.</string>
+	<string>Halltone lets your iPhone tell when it's near this Mac, and can send your headphones back to your iPhone when this Mac takes them.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_halltone._udp</string>

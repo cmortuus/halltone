@@ -30,6 +30,8 @@
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Halltone finds your Mac and receives audio from it over your local network.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>In Auto mode, Halltone uses Bluetooth signal strength to tell when you're near your Mac, so audio is close to real time at your desk and smooth when you walk away.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

@@ -28,6 +28,7 @@ final class SenderModel: ObservableObject {
     /// A listening phone asked to keep its headphones (see HeadphoneGuard).
     @Published private(set) var holdingHeadphones = false
     private let headphoneGuard = HeadphoneGuard()
+    private lazy var beacon = ProximityBeacon(name: macName)
     private var permissionTimer: Timer?
     var panelVisible = false {
         didSet {
@@ -109,6 +110,7 @@ final class SenderModel: ObservableObject {
         headphoneGuard.lastAudibleUptimeNs = { audible.load() }
         do {
             try s.start()
+            beacon.start()
             startError = nil
         } catch {
             startError = "\(error)"

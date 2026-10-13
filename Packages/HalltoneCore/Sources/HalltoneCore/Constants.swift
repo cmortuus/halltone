@@ -20,4 +20,9 @@ public enum Constants {
     public static let keepaliveInterval: TimeInterval = 1.0
     public static let subscriberTimeout: TimeInterval = 5.0
     public static let audioSilenceTimeout: TimeInterval = 1.5
+
+    /// Bluetooth LE beacon the Mac app advertises so the phone can tell from signal strength
+    /// whether it's near the Mac (Auto latency). One readable characteristic: the Mac's name.
+    public static let proximityServiceUUID = "3E408C1B-0C89-4E46-BA16-0D8C3334D5C8"
+    public static let proximityNameUUID = "E9CE01AB-CF4A-4622-B047-CDC7D290435E"
 }

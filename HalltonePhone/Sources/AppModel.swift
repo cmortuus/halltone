@@ -115,6 +115,7 @@ final class AppModel: ObservableObject {
             defaults.set(latencyMode.rawValue, forKey: Key.latencyMode)
             receiver.latencyMode = latencyMode
             diag("latency mode: \(latencyMode.rawValue)")
+            updateProximity()
         }
     }
     /// Ask the Mac not to take the headphones back while this phone listens (and to resume
@@ -157,6 +158,9 @@ final class AppModel: ObservableObject {
     private let defaults = UserDefaults.standard
     private var browser: NWBrowser?
     private var pauseTask: Task<Void, Never>?
+    /// Bluetooth signal strength to the Mac, for Auto latency.
+    private let proximity = MacProximity()
+    private var proximityRunning = false
     private var rebuildTask: Task<Void, Never>?
     private var autoConnectPending: String?
     private var observers: [NSObjectProtocol] = []
@@ -180,8 +184,10 @@ final class AppModel: ObservableObject {
         receiver.onStats = { [weak self] s in
             Task { @MainActor in
                 self?.stats = s
+                self?.updateProximity()
                 if s.state.isActive, Self.shouldLogStats() {
-                    diag("stats buf=\(s.bufferMs)/\(s.targetMs) loss=\(s.lossPercent)% pps=\(s.packetsPerSecond) under=\(s.underruns) cb=\(s.callbackFrames) gap=\(s.arrivalGapMs) maxgap10s=\(s.maxArrivalGapMs10s) timergap10s=\(s.maxTimerGapMs10s) bg=\(UIApplication.shared.applicationState == .background) engine=\(self?.playback.engine.isRunning ?? false)")
+                    let rssi = self?.proximity.rssi.map { String(Int($0)) } ?? "-"
+                    diag("stats atMac=\(s.atMac) near=\(s.phoneNearMac.map(String.init) ?? "-") rssi=\(rssi) active=\(s.macUserActive.map(String.init) ?? "-") buf=\(s.bufferMs)/\(s.targetMs) loss=\(s.lossPercent)% pps=\(s.packetsPerSecond) under=\(s.underruns) cb=\(s.callbackFrames) gap=\(s.arrivalGapMs) maxgap10s=\(s.maxArrivalGapMs10s) timergap10s=\(s.maxTimerGapMs10s) bg=\(UIApplication.shared.applicationState == .background) engine=\(self?.playback.engine.isRunning ?? false)")
                 }
             }
         }
@@ -464,6 +470,23 @@ final class AppModel: ObservableObject {
         default:
             // Any other route change that stopped the engine (e.g. category/override changes).
             if isActive, !paused, !playback.engine.isRunning { rebuildEngine(reason: "route change \(reason.rawValue)") }
+        }
+    }
+
+    /// Bluetooth proximity runs only in Auto mode while connected to a Mac.
+    private func updateProximity() {
+        let want = latencyMode == .auto && stats.state.isActive && !stats.macName.isEmpty
+        if want {
+            if !proximityRunning {
+                proximityRunning = true
+                proximity.onChange = { [weak self] near in self?.receiver.phoneNearMac = near }
+            }
+            proximity.start(macName: stats.macName)
+            proximity.calibrating = stats.macUserActive == true
+        } else if proximityRunning {
+            proximityRunning = false
+            proximity.stop()
+            receiver.phoneNearMac = nil
         }
     }
 
