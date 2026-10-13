@@ -71,6 +71,9 @@ public final class Sender {
     private var lastControlsFlag: Bool?
     private var statusTicks = 0
     private var nudgeLogTicks = 0
+    /// The last ~2.5 s of audio datagrams, for RESEND.
+    private let history = DatagramHistory(slots: 256)
+    private let resentCounter = AtomicCounter()
 
     public private(set) var stats = Stats()
     public let config: Config
@@ -242,6 +245,15 @@ public final class Sender {
                 s.nudges += 1
             }
             lock.unlock()
+        case .resend(let positions):
+            guard let socket else { break }
+            lock.lock(); let known = subscribers[key] != nil; lock.unlock()
+            guard known else { break }
+            var sent = 0
+            for p in positions {
+                if history.withDatagram(samplePos: p, { socket.send($0, $1, to: address) }) { sent += 1 }
+            }
+            resentCounter.add(UInt32(sent))
         case .bye:
             remove(key: key, reason: "bye")
         case .control(let cmd) where !cmd.isMediaKey:
@@ -332,7 +344,7 @@ public final class Sender {
             for (key, s) in subscribers {
                 // The phone's own view (from its keepalives): the only live playback health
                 // signal when it's away on cellular and its log can't be pulled.
-                log.notice("\(s.name, privacy: .public) @ \(key, privacy: .public): buffer \(s.bufferMs) ms, loss \(String(format: "%.1f", Double(s.lossPermille) / 10))%, nudges \(s.nudges) (max gap \(Int(s.maxNudgeGapMs)) ms)")
+                log.notice("\(s.name, privacy: .public) @ \(key, privacy: .public): resent \(self.resentCounter.load()), buffer \(s.bufferMs) ms, loss \(String(format: "%.1f", Double(s.lossPermille) / 10), privacy: .public)%, nudges \(s.nudges) (max gap \(Int(s.maxNudgeGapMs)) ms)")
                 s.nudges = 0; s.maxNudgeGapMs = 0
             }
             lock.unlock()
@@ -562,6 +574,7 @@ public final class Sender {
     }
 
     private func fanOut(_ ptr: UnsafePointer<UInt8>, _ len: Int, samplePos: UInt64) {
+        history.store(ptr, len, samplePos: samplePos)
         if samplePos % 4800 == 0, let hook = onPacketSent { hook(samplePos, DispatchTime.now().uptimeNanoseconds) }
         packetsCounter.add(1)
         bytesCounter.add(UInt32(len))
@@ -591,6 +604,48 @@ public final class Sender {
         let addrs = targets
         lock.unlock()
         for a in addrs { socket.send(ptr, len, to: a) }
+    }
+}
+#endif
+
+#if os(macOS)
+/// Fixed ring of recent audio datagrams (preallocated, no allocation on the encode thread), so a
+/// phone's RESEND can be answered with the original packet.
+final class DatagramHistory {
+    private let slots: Int
+    private let capacity = Packet.audioOverhead + 1500
+    private let storage: UnsafeMutablePointer<UInt8>
+    private var lengths: [Int]
+    private var positions: [UInt64]
+    private var next = 0
+    private let lock = NSLock()
+
+    init(slots: Int) {
+        self.slots = slots
+        storage = .allocate(capacity: slots * capacity)
+        lengths = [Int](repeating: 0, count: slots)
+        positions = [UInt64](repeating: .max, count: slots)
+    }
+
+    deinit { storage.deallocate() }
+
+    func store(_ ptr: UnsafePointer<UInt8>, _ len: Int, samplePos: UInt64) {
+        guard len <= capacity else { return }
+        lock.lock()
+        (storage + next * capacity).update(from: ptr, count: len)
+        lengths[next] = len
+        positions[next] = samplePos
+        next = (next + 1) % slots
+        lock.unlock()
+    }
+
+    /// Calls `body` with the stored datagram for `samplePos`; false if it's no longer kept.
+    @discardableResult
+    func withDatagram(samplePos: UInt64, _ body: (UnsafeRawPointer, Int) -> Void) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard let i = positions.firstIndex(of: samplePos) else { return false }
+        body(UnsafeRawPointer(storage + i * capacity), lengths[i])
+        return true
     }
 }
 #endif

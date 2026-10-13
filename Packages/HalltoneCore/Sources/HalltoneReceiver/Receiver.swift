@@ -66,6 +66,15 @@ public final class Receiver {
         public var jitterResets: UInt64 = 0
         public var queuedMs = 0
         public var handoffMs = 0
+        /// Retransmission: frames asked for again, and how many of those then arrived in time.
+        public var resendRequested: UInt64 = 0
+        public var resendRecovered: UInt64 = 0
+        /// Glitch counters (cumulative): frames concealed, arrived too late, crossfade-trimmed
+        /// (catch-up/drift), and stretched (drift).
+        public var concealedFrames: UInt64 = 0
+        public var lateFrames: UInt64 = 0
+        public var trimmedFrames: UInt64 = 0
+        public var stretchedFrames: UInt64 = 0
         public init() {}
     }
 
@@ -98,6 +107,51 @@ public final class Receiver {
         didSet { queue.async { [self] in stats.phoneNearMac = phoneNearMac; updatePresence() } }
     }
 
+    /// Notice holes in the stream and ask the Mac for them while there's still time to play them.
+    private func trackForResend(session: UInt32, pos: UInt64) {
+        let frame = frameSamplesForResend
+        guard frame > 0 else { return }
+        if session != newestSession { newestSession = session; newestPos = nil; missing.removeAll() }
+        guard let newest = newestPos else { newestPos = pos; return }
+        if pos <= newest {
+            // Late, reordered or a retransmission.
+            if missing.removeValue(forKey: pos) != nil { stats.resendRecovered += 1 }
+            return
+        }
+        newestPos = pos
+        let gapFrames = (pos - newest) / frame
+        guard gapFrames > 1 else { return }
+        // A hole of more than ~1 s is an outage or a stream jump, not loss worth chasing.
+        guard gapFrames <= 100 else { return }
+        let t = now()
+        var ask: [UInt64] = []
+        var p = newest + frame
+        while p < pos, ask.count < Packet.maxResend {
+            missing[p] = (t, 1); ask.append(p); p += frame
+        }
+        sendResend(ask)
+    }
+
+    private func sendResend(_ positions: [UInt64]) {
+        guard !positions.isEmpty, case .subscribed = state, let c = connection else { return }
+        stats.resendRequested += UInt64(positions.count)
+        send(.resend(samplePositions: positions), over: c)
+    }
+
+    /// Ask once more for frames still missing after 150 ms; forget them after 2 s.
+    private func retryResends() {
+        guard !missing.isEmpty else { return }
+        let t = now()
+        var again: [UInt64] = []
+        for (p, m) in missing {
+            if t - m.asked > 2 { missing.removeValue(forKey: p); continue }
+            if m.tries < 2, t - m.asked > 0.15, again.count < Packet.maxResend {
+                missing[p] = (m.asked, m.tries + 1); again.append(p)
+            }
+        }
+        sendResend(again.sorted())
+    }
+
     private func updatePresence() {
         // Typing or mousing right now settles it; otherwise Bluetooth proximity if known, else
         // the Mac's minutes-long activity window.
@@ -127,9 +181,12 @@ public final class Receiver {
         return .preset(latencyMode, frameSamples: frameSamples)
     }
 
+    /// Mode change (or cellular ↔ Wi-Fi): resize smoothly, keeping what's been learned about
+    /// the network's gaps. Flushing restarted at the new mode's default (Stable at 300 ms while
+    /// the Wi-Fi had 700 ms holes) and played a gap.
     private func applyEffectiveConfig() {
         guard let pump else { return }
-        pump.apply(effectiveConfig(frameSamples: pump.jitter.frameSamples))
+        pump.retune(effectiveConfig(frameSamples: pump.jitter.frameSamples))
     }
 
     private let sink: PlaybackSink
@@ -159,6 +216,12 @@ public final class Receiver {
     private var lastTimerFire: TimeInterval?
     private var windowTimerGap: TimeInterval = 0
     private var lastPacketArrival: TimeInterval?
+    /// Retransmission bookkeeping: newest samplePos seen, frames asked for again (pos → when
+    /// first asked, tries), and the stream's frame size.
+    private var newestPos: UInt64?
+    private var newestSession: UInt32?
+    private var missing: [UInt64: (asked: TimeInterval, tries: Int)] = [:]
+    private var frameSamplesForResend: UInt64 = 0
     private var windowArrivalGap: TimeInterval = 0
 
     public init(sink: PlaybackSink) {
@@ -290,6 +353,7 @@ public final class Receiver {
             stats.macName = macName
             if case .subscribed = state {} else { log.info("subscribed to \(macName, privacy: .public) (\(String(describing: codec), privacy: .public), \(frameSamples) spf)") }
             state = .subscribed(macName: macName)
+            frameSamplesForResend = UInt64(frameSamples)
             sendHoldHeadphones()
             lastAudioAt = now()
         case .subscribeNak(let reason):
@@ -305,6 +369,7 @@ public final class Receiver {
             packetsThisSecond += 1
             bytesThisSecond += bytes
             if case .reconnecting = state { state = .subscribed(macName: stats.macName) }
+            trackForResend(session: packet.header.session, pos: samplePos)
             pump?.push(session: packet.header.session, samplePos: samplePos, payload: payload)
         case .status(let flags):
             let available = flags.contains(.controlsAvailable)
@@ -404,6 +469,7 @@ public final class Receiver {
         default:
             break
         }
+        retryResends()
         if tickCount % 4 == 0 { everySecond() }
     }
 
@@ -426,6 +492,10 @@ public final class Receiver {
         stats.callbackFrames = Int(sink.maxCallbackFrames.load())
         stats.arrivalGapMs = Int(pump?.recentGapMs ?? 0)
         stats.jitterPrimed = js.primed
+        stats.concealedFrames = js.lost
+        stats.lateFrames = js.late
+        stats.trimmedFrames = js.driftDrops
+        stats.stretchedFrames = js.driftDups
         stats.jitterResets = js.resets
         stats.queuedMs = Int(Double(pump?.queuedSamples ?? 0) * 1000 / Constants.sampleRate)
         stats.handoffMs = Int(Double(sink.ring.availableToRead / Constants.channels) * 1000 / Constants.sampleRate)

@@ -16,6 +16,10 @@ public enum MessageType: UInt8 {
     /// Phone → Mac, empty, every ~20 ms while playing. Frequent uplink traffic keeps the phone's
     /// Wi-Fi radio out of power save, so audio arrives steadily instead of in bursts. Ignored.
     case nudge = 0x07
+    /// Phone → Mac: resend these audio frames (by samplePos). A deep buffer has hundreds of ms
+    /// to recover packets Wi-Fi dropped (bursty loss while the phone dozes), which FEC can't
+    /// cover. The Mac answers with the original AUDIO datagrams. Older Macs ignore it.
+    case resend = 0x08
     case audio = 0x10
     case control = 0x20
 }
@@ -80,6 +84,7 @@ public enum Message: Equatable {
     case subscribeNak(reason: UInt8)
     case status(flags: StatusFlags)
     case nudge
+    case resend(samplePositions: [UInt64])
     case audio(samplePos: UInt64, codec: CodecID, payload: Data)
     case control(command: ControlCommand)
 
@@ -92,6 +97,7 @@ public enum Message: Equatable {
         case .subscribeNak: return .subscribeNak
         case .status: return .status
         case .nudge: return .nudge
+        case .resend: return .resend
         case .audio: return .audio
         case .control: return .control
         }
@@ -110,6 +116,9 @@ public struct Packet: Equatable {
         self.header = Header(type: message.type, seq: seq, session: session)
         self.message = message
     }
+
+    /// Most frames one RESEND may ask for.
+    public static let maxResend = 64
 
     /// Maximum serialized size of the audio header (common header + samplePos + codec + len).
     public static let audioOverhead = Header.size + 8 + 1 + 2
@@ -137,6 +146,10 @@ public struct Packet: Equatable {
             w.u8(flags.rawValue)
         case .nudge:
             break
+        case .resend(let positions):
+            let n = min(positions.count, Packet.maxResend)
+            w.u8(UInt8(n))
+            for p in positions.prefix(n) { w.u64(p) }
         case .audio(let pos, let codec, let payload):
             w.u64(pos); w.u8(codec.rawValue); w.u16(UInt16(min(payload.count, Int(UInt16.max)))); w.bytes(payload)
         case .control(let cmd):
@@ -175,6 +188,14 @@ public struct Packet: Equatable {
             message = .status(flags: StatusFlags(rawValue: flags))
         case .nudge:
             message = .nudge
+        case .resend:
+            guard let n = r.u8(), n <= Packet.maxResend else { return nil }
+            var positions: [UInt64] = []
+            for _ in 0..<n {
+                guard let p = r.u64() else { return nil }
+                positions.append(p)
+            }
+            message = .resend(samplePositions: positions)
         case .audio:
             guard let pos = r.u64(), let rawCodec = r.u8(), let codec = CodecID(rawValue: rawCodec),
                   let len = r.u16(), let payload = r.bytes(Int(len)) else { return nil }

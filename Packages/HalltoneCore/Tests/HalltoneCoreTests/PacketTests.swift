@@ -8,6 +8,7 @@ import Foundation
             .subscribe(pairingCode: 1234, deviceName: "Caleb’s iPhone"),
             .keepalive(lastSeqReceived: 99, lossPermille: 12, bufferMs: 60),
             .bye,
+            .resend(samplePositions: [0, 480, 960, UInt64.max]),
             .subscribeAck(codec: .pcm16, sampleRate: 48000, channels: 2, frameSamples: 240, macName: "Mac Studio"),
             .subscribeNak(reason: 1),
             .status(flags: [.controlsAvailable]),

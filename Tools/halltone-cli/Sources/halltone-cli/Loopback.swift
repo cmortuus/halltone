@@ -67,7 +67,7 @@ func runReceive(target: String, pairingCode: UInt32, name: String, wav: URL?, se
     receiver.onState = { st in print("[recv] state: \(st)"); fflush(stdout) }
     receiver.onStats = { s in
         guard s.state.isActive else { return }
-        print("[recv] cb \(s.callbackFrames) \(s.packetsPerSecond) pkt/s \(s.kilobitsPerSecond) kbps buffer \(s.bufferMs)/\(s.targetMs) ms loss \(s.lossPercent)% concealed \(s.concealed) underruns \(s.underruns) est. latency \(s.estimatedLatencyMs) ms")
+        print("[recv] cb \(s.callbackFrames) \(s.packetsPerSecond) pkt/s \(s.kilobitsPerSecond) kbps buffer \(s.bufferMs)/\(s.targetMs) ms loss \(s.lossPercent)% concealed \(s.concealed) underruns \(s.underruns) est. latency \(s.estimatedLatencyMs) ms resend asked \(s.resendRequested) recovered \(s.resendRecovered) late \(s.lateFrames)")
         fflush(stdout)
     }
     receiver.onFrameScheduled = { pos, ns in latencyWriter?.write(pos, ns) }

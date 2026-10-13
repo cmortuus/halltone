@@ -211,7 +211,7 @@ final class AppModel: ObservableObject {
                 self?.updateProximity()
                 if s.state.isActive, Self.shouldLogStats() {
                     let rssi = self?.proximity.rssi.map { String(Int($0)) } ?? "-"
-                    diag("stats atMac=\(s.atMac) near=\(s.phoneNearMac.map(String.init) ?? "-") rssi=\(rssi) active=\(s.macUserActive.map(String.init) ?? "-") input=\(s.macInputRecent.map(String.init) ?? "-") buf=\(s.bufferMs)/\(s.targetMs) loss=\(s.lossPercent)% pps=\(s.packetsPerSecond) under=\(s.underruns) cb=\(s.callbackFrames) gap=\(s.arrivalGapMs) maxgap10s=\(s.maxArrivalGapMs10s) timergap10s=\(s.maxTimerGapMs10s) bg=\(UIApplication.shared.applicationState == .background) primed=\(s.jitterPrimed) resets=\(s.jitterResets) queued=\(s.queuedMs) handoff=\(s.handoffMs) muted=\(self?.playback.muted ?? false) engine=\(self?.playback.engine.isRunning ?? false)")
+                    diag("stats atMac=\(s.atMac) near=\(s.phoneNearMac.map(String.init) ?? "-") rssi=\(rssi) active=\(s.macUserActive.map(String.init) ?? "-") input=\(s.macInputRecent.map(String.init) ?? "-") buf=\(s.bufferMs)/\(s.targetMs) loss=\(s.lossPercent)% pps=\(s.packetsPerSecond) under=\(s.underruns) cb=\(s.callbackFrames) gap=\(s.arrivalGapMs) maxgap10s=\(s.maxArrivalGapMs10s) timergap10s=\(s.maxTimerGapMs10s) bg=\(UIApplication.shared.applicationState == .background) primed=\(s.jitterPrimed) resets=\(s.jitterResets) queued=\(s.queuedMs) handoff=\(s.handoffMs) muted=\(self?.playback.muted ?? false) concealed=\(s.concealedFrames) late=\(s.lateFrames) trimmed=\(s.trimmedFrames) stretched=\(s.stretchedFrames) resendAsked=\(s.resendRequested) recovered=\(s.resendRecovered) engine=\(self?.playback.engine.isRunning ?? false)")
                 }
             }
         }
@@ -538,8 +538,8 @@ final class AppModel: ObservableObject {
                 interruptionTask = Task { [weak self] in
                     try? await Task.sleep(for: .seconds(1))
                     guard let self, !Task.isCancelled, self.isActive, !self.calls.inCall, !self.paused else { return }
-                    self.pause(reason: "interrupted")
                     self.pausedByInterruption = true
+                    self.pause(reason: "interrupted", grace: 600, recoverFromInterruption: true)
                     self.keepAlive(reason: "interrupted")
                 }
             }
@@ -598,15 +598,30 @@ final class AppModel: ObservableObject {
         pause(reason: "output device went away")
     }
 
-    private func pause(reason: String) {
-        diag("\(reason); pausing (subscription kept for 60 s)")
+    /// `grace`: how long to stay subscribed before giving up. Headphones gone: 60 s. An
+    /// interruption: 10 min, checking every 5 s whether anything else is still playing; once
+    /// nothing is, take the audio back (iOS often never says the interruption ended, e.g.
+    /// after a call or when CarPlay disconnects).
+    private func pause(reason: String, grace: TimeInterval = 60, recoverFromInterruption: Bool = false) {
+        diag("\(reason); pausing (subscription kept for \(Int(grace)) s)")
         paused = true
         playback.muted = true
         pauseTask?.cancel()
         pauseTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(60))
+            let start = Date()
+            while Date().timeIntervalSince(start) < grace {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled, let self, self.paused else { return }
+                if recoverFromInterruption, self.pausedByInterruption, !self.calls.inCall,
+                   !AVAudioSession.sharedInstance().isOtherAudioPlaying {
+                    diag("interruption over (nothing else playing); resuming")
+                    self.resume()
+                    return
+                }
+            }
             guard !Task.isCancelled, let self, self.paused else { return }
-            log.notice("paused for 60 s; disconnecting")
+            log.notice("paused for \(Int(grace)) s; disconnecting")
+            diag("paused for \(Int(grace)) s; disconnecting")
             self.disconnect()
         }
     }
