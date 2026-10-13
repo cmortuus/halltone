@@ -27,6 +27,8 @@ final class MacProximity: NSObject, CBCentralManagerDelegate, CBPeripheralDelega
     private var rejected: Set<UUID> = []
     private var timer: Timer?
     private var nearRun = 0, farRun = 0
+    private var recent: [Double] = []
+    private var lostTimer: Timer?
     private let defaults = UserDefaults.standard
 
     private let serviceUUID = CBUUID(string: Constants.proximityServiceUUID)
@@ -38,8 +40,9 @@ final class MacProximity: NSObject, CBCentralManagerDelegate, CBPeripheralDelega
         set { defaults.set(newValue, forKey: baselineKey) }
     }
     private var baselineKey: String { "proximityBaseline.\(macName ?? "")" }
-    private var nearThreshold: Double { baseline - 10 }
-    private var farThreshold: Double { baseline - 16 }
+    /// Walk test: desk -62...-76 dBm, another room -77...-85, so the bands are narrow.
+    private var nearThreshold: Double { baseline - 6 }
+    private var farThreshold: Double { baseline - 11 }
 
     func start(macName: String) {
         guard self.macName != macName || central == nil else { return }
@@ -50,6 +53,8 @@ final class MacProximity: NSObject, CBCentralManagerDelegate, CBPeripheralDelega
 
     func stop() {
         timer?.invalidate(); timer = nil
+        lostTimer?.invalidate(); lostTimer = nil
+        recent = []
         if let p = peripheral { central?.cancelPeripheralConnection(p) }
         central?.stopScan()
         central = nil
@@ -88,6 +93,7 @@ final class MacProximity: NSObject, CBCentralManagerDelegate, CBPeripheralDelega
     }
 
     func centralManager(_ central: CBCentralManager, didConnect p: CBPeripheral) {
+        lostTimer?.invalidate(); lostTimer = nil
         if matched { startReading(); return }
         p.discoverServices([serviceUUID])
     }
@@ -100,12 +106,19 @@ final class MacProximity: NSObject, CBCentralManagerDelegate, CBPeripheralDelega
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral p: CBPeripheral, error: Error?) {
         timer?.invalidate(); timer = nil
         guard matched else { peripheral = nil; scan(); return }
-        // Out of range: away. A pending connect has no timeout, so it reconnects (and readings
-        // resume) when the phone comes back.
+        // The link also drops every minute or so at the desk and reconnects within seconds, so
+        // only a link that stays down means out of range. A pending connect has no timeout: it
+        // reconnects (and readings resume) when the phone comes back.
+        diag("proximity: beacon link dropped (\(error?.localizedDescription ?? "no error"))")
         rssi = nil
+        recent = []
         nearRun = 0; farRun = 0
-        if near != false { diag("proximity: Mac beacon lost; away") }
-        near = false
+        lostTimer?.invalidate()
+        lostTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: false) { [weak self] _ in
+            guard let self, self.peripheral?.state != .connected, self.near != false else { return }
+            diag("proximity: Mac beacon out of range; away")
+            self.near = false
+        }
         central.connect(p)
     }
 
@@ -134,16 +147,20 @@ final class MacProximity: NSObject, CBCentralManagerDelegate, CBPeripheralDelega
         guard error == nil else { return }
         let value = RSSI.doubleValue
         guard value < 0, value > -127 else { return }
-        let smoothed = rssi.map { $0 + 0.35 * (value - $0) } ?? value
+        // Median of the last 5 readings (~10 s): bodies and hands make single readings jump.
+        recent = Array((recent + [value]).suffix(5))
+        let smoothed = recent.sorted()[recent.count / 2]
         rssi = smoothed
-        if calibrating, smoothed > -80 {
-            // Slow average, clamped so a bad sample can't make "near" absurdly strict or loose.
+        if calibrating, near != false, smoothed >= baseline - 8 {
+            // Learn the desk signal only from readings near it: the Mac counts as "in use" for
+            // minutes after the last keypress, and readings from walking away mustn't lower it.
+            // Clamped so a bad stretch can't make "near" absurdly strict or loose.
             baseline = min(-45, max(-72, baseline + 0.05 * (smoothed - baseline)))
         }
         if smoothed >= nearThreshold { nearRun += 1; farRun = 0 }
         else if smoothed < farThreshold { farRun += 1; nearRun = 0 }
         else { nearRun = 0; farRun = 0 }
-        // Three readings (~6 s) in a row before switching, so a hand over the phone doesn't flip it.
+        // Three medians (~6 s) in a row before switching, so a brief dip doesn't flip it.
         if nearRun >= 3, near != true { near = true; diag("proximity: near the Mac (\(Int(smoothed)) dBm)") }
         if farRun >= 3, near != false { near = false; diag("proximity: away from the Mac (\(Int(smoothed)) dBm)") }
     }
@@ -157,9 +174,17 @@ final class MacProximity: NSObject, CBCentralManagerDelegate, CBPeripheralDelega
 
     private func startReading() {
         timer?.invalidate()
+        var ticks = 0
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            guard let p = self?.peripheral, p.state == .connected else { return }
+            guard let self, let p = self.peripheral, p.state == .connected else { return }
             p.readRSSI()
+            // The Mac drops a connection with no data traffic after ~65 s ("disconnected from
+            // us"); RSSI reads don't count, so read the name now and then to keep it up.
+            ticks += 1
+            if ticks % 10 == 0, let c = p.services?.first(where: { $0.uuid == self.serviceUUID })?
+                .characteristics?.first(where: { $0.uuid == self.nameUUID }) {
+                p.readValue(for: c)
+            }
         }
         peripheral?.readRSSI()
     }
