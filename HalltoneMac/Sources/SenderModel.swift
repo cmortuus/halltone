@@ -98,6 +98,7 @@ final class SenderModel: ObservableObject {
         }
         s.controlsAvailable = { MediaKeys.isTrusted }
         s.canHoldHeadphones = { HeadphoneGuard.available }
+        s.userAtMac = { UserPresence.isAtMac }
         s.onHoldHeadphones = { [weak self] on in
             DispatchQueue.main.async {
                 self?.headphoneGuard.holding = on

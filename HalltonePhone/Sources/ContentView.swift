@@ -88,6 +88,7 @@ struct ContentView: View {
                 }
                 Section {
                     Picker("Latency", selection: $model.latencyMode) {
+                        Text("Auto").tag(LatencyMode.auto)
                         Text("Lowest").tag(LatencyMode.lowest)
                         Text("Balanced").tag(LatencyMode.balanced)
                         Text("Stable").tag(LatencyMode.stable)
@@ -168,6 +169,14 @@ struct ContentView: View {
 
     private var latencyFooter: String {
         switch model.latencyMode {
+        case .auto:
+            let now: String
+            switch (model.isActive, model.stats.macUserActive) {
+            case (true, true?): now = " Right now: you're at your Mac, so it's close to real time."
+            case (true, false?): now = " Right now: away from your Mac, so extra buffer for smooth audio."
+            default: now = ""
+            }
+            return "Smooth, dropout-free audio while you're away from your Mac; close to real time when you're using it." + now
         case .lowest: return "Closest to real time, for watching video on the Mac. Uses only as much delay as your Wi‑Fi needs to play smoothly."
         case .balanced: return "Adapts to your Wi‑Fi: no more delay than it needs to avoid dropouts."
         case .stable: return "About a third of a second behind, but rides out moving between Wi‑Fi access points and weak spots. Best for music and podcasts while you move around."

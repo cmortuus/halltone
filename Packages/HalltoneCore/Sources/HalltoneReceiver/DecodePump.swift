@@ -75,6 +75,12 @@ final class DecodePump {
         cachedPos = nil
     }
 
+    /// Like `apply`, but keeps playing: the depth eases to the new target.
+    func retune(_ config: JitterBuffer.Config) {
+        lock.lock(); defer { lock.unlock() }
+        jitter.retune(config, now: now())
+    }
+
     func flush() {
         lock.lock(); defer { lock.unlock() }
         jitter.flush(now: now())

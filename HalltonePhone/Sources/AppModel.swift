@@ -165,7 +165,7 @@ final class AppModel: ObservableObject {
         receiver = Receiver(sink: playback)
         autoConnect = defaults.object(forKey: Key.autoConnect) as? Bool ?? true
         knownAddresses = defaults.dictionary(forKey: Key.knownAddresses) as? [String: String] ?? [:]
-        latencyMode = defaults.string(forKey: Key.latencyMode).flatMap(LatencyMode.init(rawValue:)) ?? .stable
+        latencyMode = defaults.string(forKey: Key.latencyMode).flatMap(LatencyMode.init(rawValue:)) ?? .auto
         keepHeadphones = defaults.bool(forKey: Key.keepHeadphones)
         receiver.latencyMode = latencyMode
         receiver.holdHeadphones = keepHeadphones

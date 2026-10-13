@@ -233,6 +233,44 @@ extension JitterSim.Result: CustomStringConvertible {
         #expect(jb.stats.targetMs < 150, "target \(jb.stats.targetMs) after a blackout")
     }
 
+    /// Auto mode: walking away eases the buffer up to Stable's level and sitting back down eases
+    /// it down to Lowest's, without flushing (no reset, no concealment, no render underruns).
+    @Test func retuneMovesDepthWithoutAGap() {
+        let jb = JitterBuffer(config: .preset(.lowest, frameSamples: 480))
+        let frame = 480, frameDur = 0.01, cb = 256
+        var ring = 0, t = 0.0, nextRender = 0.0, sent = 0, lastRelease = 0.0
+        var held: [UInt64] = []
+        var conceals = 0, underruns = 0
+        var depthAway = 0.0, depthBack = 0.0
+        while t < 100 {
+            if t >= 20, t - 0.001 < 20 { jb.retune(.preset(.stable, frameSamples: 480), now: t) }
+            if t >= 60, t - 0.001 < 60 { depthAway = jb.stats.depthMs; jb.retune(.preset(.lowest, frameSamples: 480), now: t) }
+            while Double(sent) * frameDur <= t { held.append(UInt64(sent * frame)); sent += 1 }
+            if t - lastRelease >= 0.1 {
+                for p in held { jb.push(session: 1, samplePos: p, payload: Data([1]), now: t) }
+                held.removeAll(); lastRelease = t
+            }
+            pump: while ring < cb + frame {
+                switch jb.pull(playoutAhead: ring, now: t) {
+                case .wait: break pump
+                case .conceal: ring += frame; conceals += 1
+                default: ring += frame
+                }
+            }
+            if t >= nextRender {
+                if ring >= cb { ring -= cb } else { ring = 0; if t > 5 { underruns += 1 } }
+                nextRender += Double(cb) / 48000
+            }
+            t += 0.001
+        }
+        depthBack = jb.stats.depthMs
+        print("retune: away depth \(depthAway) ms, back depth \(depthBack) ms, conceals \(conceals), underruns \(underruns)")
+        #expect(jb.stats.resets == 0)
+        #expect(conceals == 0 && underruns == 0)
+        #expect(depthAway >= 270)
+        #expect(depthBack <= 160)
+    }
+
     /// Packets arrive in clumps every `period` + random(0..<spread) s, as from a phone in Wi-Fi
     /// power save; a 256-frame render callback. Counts after a 5 s warm-up.
     private func clumpRun(_ c: JitterBuffer.Config, period: Double, spread: Double) -> (target: Double, conceals: Int, underruns: Int) {

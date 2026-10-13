@@ -48,6 +48,9 @@ public struct StatusFlags: OptionSet, Equatable {
     public static let lastControlFailed = StatusFlags(rawValue: 1 << 1)
     /// The Mac supports keeping headphones on the phone (holdHeadphones* commands).
     public static let canHoldHeadphones = StatusFlags(rawValue: 1 << 2)
+    /// Someone is using the Mac right now (recent keyboard/mouse input, screen unlocked). The
+    /// phone's Auto latency mode tracks it: close to real time at the Mac, a big buffer away.
+    public static let userAtMac = StatusFlags(rawValue: 1 << 3)
 }
 
 public enum NakReason: UInt8 {

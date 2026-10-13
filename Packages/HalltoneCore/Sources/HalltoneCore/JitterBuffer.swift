@@ -289,6 +289,17 @@ public final class JitterBuffer {
         reset(now: now)
     }
 
+    /// Switch latency behavior without flushing (Auto mode following the user to and from the
+    /// Mac): the target jumps to the new mode's level and the depth follows it, trimmed by
+    /// crossfaded drops or stretched by crossfaded duplicates, so there's no gap.
+    public func retune(_ new: Config, now: TimeInterval) {
+        var c = new
+        c.frameSamples = config.frameSamples
+        config = c
+        setTarget(ms: max(c.initialTargetMs, min(c.maxTargetMs, gapPeakMs + c.gapMarginMs)))
+        lastUnderrunTime = now // hold off lowering for a while
+    }
+
     /// Packets arriving after their play time are a jitter signal too: several in one second
     /// means the target is too shallow, even if concealment hid the gaps.
     private func noteLate(now: TimeInterval) {
@@ -371,6 +382,9 @@ public final class JitterBuffer {
 
 /// User-facing latency/robustness trade-off.
 public enum LatencyMode: String, CaseIterable, Codable {
+    /// Stable while nobody is using the Mac, lowest while someone is (the Mac reports it).
+    /// Listening away from the Mac wants no dropouts; sitting back down wants lip sync. Default.
+    case auto
     /// Smallest buffer that still covers the gaps the network actually has: tighter margin and
     /// faster shrink than balanced. (Concealing gaps instead of waiting sounded awful on Wi-Fi
     /// with power-save bursts: every gap past a fixed cap became a blip plus a skip.)
@@ -378,14 +392,18 @@ public enum LatencyMode: String, CaseIterable, Codable {
     /// Adapts to the network: covers the gaps it actually sees.
     case balanced
     /// Big buffer that rides out Wi-Fi access-point handoffs, dead spots and a locked phone's
-    /// Wi-Fi blackouts without dropouts. Default.
+    /// Wi-Fi blackouts without dropouts.
     case stable
 }
 
 extension JitterBuffer.Config {
+    /// `.auto` has no preset of its own: the receiver picks lowest or stable. Asked directly, it
+    /// gets stable (the away-from-the-Mac case it exists for).
     public static func preset(_ mode: LatencyMode, frameSamples: Int) -> JitterBuffer.Config {
         var c = JitterBuffer.Config(frameSamples: frameSamples)
         switch mode {
+        case .auto:
+            return preset(.stable, frameSamples: frameSamples)
         case .lowest:
             c.initialTargetMs = 40
             c.minTargetMs = 20

@@ -58,6 +58,9 @@ public final class Sender {
     public var onHoldHeadphones: ((Bool) -> Void)?
     /// Whether this Mac can keep headphones on the phone (reported in STATUS).
     public var canHoldHeadphones: (() -> Bool)?
+    /// Whether someone is using this Mac right now (reported in STATUS; sent at once on change).
+    public var userAtMac: (() -> Bool)?
+    private var lastUserAtMac: Bool?
     private var holdingHeadphones = false
     /// Uptime (ns) of the last captured frame that wasn't near-silent. Lets the app tell whether
     /// something was playing, and whether it stopped (e.g. paused when headphones disconnected).
@@ -281,6 +284,7 @@ public final class Sender {
         if available() { flags.insert(.controlsAvailable) }
         if lastControlFailed { flags.insert(.lastControlFailed) }
         if canHoldHeadphones?() == true { flags.insert(.canHoldHeadphones) }
+        if userAtMac?() == true { flags.insert(.userAtMac) }
         let targetsNow: [sockaddr_storage]
         if let addresses { targetsNow = addresses } else { lock.lock(); targetsNow = targets; lock.unlock() }
         for a in targetsNow { sendControl(.status(flags: flags), to: a) }
@@ -302,7 +306,13 @@ public final class Sender {
         // STATUS: immediately when the permission flips, otherwise every 5 s (UDP may drop it).
         if let available = controlsAvailable?() {
             statusTicks += 1
-            if available != lastControlsFlag || statusTicks % 5 == 0 {
+            let atMac = userAtMac?()
+            let presenceChanged = atMac != lastUserAtMac
+            if presenceChanged, lastUserAtMac != nil {
+                log.notice("user at Mac: \(atMac ?? false)")
+            }
+            lastUserAtMac = atMac
+            if available != lastControlsFlag || presenceChanged || statusTicks % 5 == 0 {
                 if available != lastControlsFlag, lastControlsFlag != nil {
                     log.notice("controls available: \(available)")
                 }
