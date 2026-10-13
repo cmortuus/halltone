@@ -474,8 +474,15 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func activateAudioSession() {
-        do { try AVAudioSession.sharedInstance().setActive(true) } catch { log.error("session activate: \(error)") }
+    @discardableResult
+    private func activateAudioSession() -> Bool {
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+            return true
+        } catch {
+            diag("session activate failed: \(error.localizedDescription)")
+            return false
+        }
     }
 
     private func observeAudioSession() {
@@ -616,7 +623,17 @@ final class AppModel: ObservableObject {
             for (attempt, delay) in delays.enumerated() {
                 if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
                 guard !Task.isCancelled, let self, self.isActive else { return }
-                self.activateAudioSession()
+                // A backgrounded app can't start an exclusive session, only a mixable one. While
+                // paused (output gone: headphones, car, AirPlay) or in a call that's all we need
+                // (silence that keeps us alive); otherwise fall back to it rather than fail six
+                // times and get suspended, which drops the Mac and never recovers.
+                let quiet = self.paused || self.calls.inCall
+                if quiet { self.configureAudioSession(mixable: true) }
+                if !self.activateAudioSession(), !quiet {
+                    diag("exclusive session refused; using a mixable one")
+                    self.configureAudioSession(mixable: true)
+                    self.activateAudioSession()
+                }
                 do {
                     try self.playback.restart()
                     if !self.paused, !self.calls.inCall { self.playback.muted = false }
