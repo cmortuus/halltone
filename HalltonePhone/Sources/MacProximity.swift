@@ -94,7 +94,8 @@ final class MacProximity: NSObject, CBCentralManagerDelegate, CBPeripheralDelega
 
     func centralManager(_ central: CBCentralManager, didConnect p: CBPeripheral) {
         lostTimer?.invalidate(); lostTimer = nil
-        if matched { startReading(); return }
+        // Rediscover on every (re)connect: the keepalive read needs the characteristic, and a
+        // reconnected peripheral has no services until they're discovered again.
         p.discoverServices([serviceUUID])
     }
 
@@ -131,7 +132,7 @@ final class MacProximity: NSObject, CBCentralManagerDelegate, CBPeripheralDelega
 
     func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         guard let c = service.characteristics?.first(where: { $0.uuid == nameUUID }) else { return reject(p) }
-        p.readValue(for: c)
+        if matched { startReading() } else { p.readValue(for: c) }
     }
 
     func peripheral(_ p: CBPeripheral, didUpdateValueFor c: CBCharacteristic, error: Error?) {
