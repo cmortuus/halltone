@@ -177,6 +177,10 @@ final class AppModel: ObservableObject {
     private var browser: NWBrowser?
     private var pauseTask: Task<Void, Never>?
     private let calls = CallWatcher()
+    private var interruptionTask: Task<Void, Never>?
+    /// Paused by an audio interruption that may never end (not a call, not a lost output):
+    /// opening the app resumes it.
+    private var pausedByInterruption = false
     /// Bluetooth signal strength to the Mac, for Auto latency.
     private let proximity = MacProximity()
     private var proximityRunning = false
@@ -220,7 +224,10 @@ final class AppModel: ObservableObject {
                               (UIApplication.willTerminateNotification, "terminate"),
                               (UIApplication.protectedDataWillBecomeUnavailableNotification, "locked"),
                               (UIApplication.protectedDataDidBecomeAvailableNotification, "unlocked")] {
-            observers.append(nc.addObserver(forName: name, object: nil, queue: .main) { _ in diag("app \(label)") })
+            observers.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                diag("app \(label)")
+                if label == "foreground" { Task { @MainActor in self?.cameToForeground() } }
+            })
         }
         setupRemoteCommands()
         calls.onChange = { [weak self] inCall in self?.callChanged(inCall) }
@@ -305,6 +312,8 @@ final class AppModel: ObservableObject {
         autoConnectPending = nil
         paused = false
         pauseTask?.cancel()
+        interruptionTask?.cancel()
+        pausedByInterruption = false
         // A previous session may have ended muted (headphones away, interruption); a muted
         // engine never reads the hand-off ring, so the new stream would never start playing.
         playback.muted = calls.inCall
@@ -318,6 +327,8 @@ final class AppModel: ObservableObject {
     func disconnect() {
         diag("disconnect requested")
         pauseTask?.cancel()
+        interruptionTask?.cancel()
+        pausedByInterruption = false
         paused = false
         receiver.disconnect()
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
@@ -518,11 +529,27 @@ final class AppModel: ObservableObject {
             if isActive, paused || reason == .routeDisconnected {
                 if !paused { pauseForMissingHeadphones() }
                 keepAliveWhileHeadphonesAway()
+            } else if isActive {
+                // Anything else (CarPlay ending, Siri, another app). iOS may never send "ended"
+                // (wireless CarPlay disconnecting didn't), and with the engine stopped we'd be
+                // suspended as soon as we're in the background. Unless it turns out to be a call
+                // (handled by the call watcher), pause and stay alive.
+                interruptionTask?.cancel()
+                interruptionTask = Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(1))
+                    guard let self, !Task.isCancelled, self.isActive, !self.calls.inCall, !self.paused else { return }
+                    self.pause(reason: "interrupted")
+                    self.pausedByInterruption = true
+                    self.keepAlive(reason: "interrupted")
+                }
             }
         case .ended:
             let opts = AVAudioSession.InterruptionOptions(rawValue: n.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0)
             diag("interruption ended (resume=\(opts.contains(.shouldResume)))")
-            if calls.inCall, isActive {
+            interruptionTask?.cancel()
+            if pausedByInterruption, isActive, !calls.inCall {
+                if opts.contains(.shouldResume) { resume() }
+            } else if calls.inCall, isActive {
                 // iOS says "resume" several times during one call; playing then puts the Mac's
                 // audio over the call. Stay silent but alive (mixable, muted) until it ends.
                 keepAlive(reason: "call in progress")
@@ -568,7 +595,11 @@ final class AppModel: ObservableObject {
     }
 
     private func pauseForMissingHeadphones() {
-        diag("output device went away; pausing (subscription kept for 60 s)")
+        pause(reason: "output device went away")
+    }
+
+    private func pause(reason: String) {
+        diag("\(reason); pausing (subscription kept for 60 s)")
         paused = true
         playback.muted = true
         pauseTask?.cancel()
@@ -593,6 +624,20 @@ final class AppModel: ObservableObject {
         rebuildEngine(reason: "keep alive: \(reason)")
     }
 
+    /// Opening the app while connected means "I want to hear it": revive audio that an
+    /// interruption stopped (in the foreground an exclusive session is allowed again).
+    private func cameToForeground() {
+        guard isActive, !calls.inCall else { return }
+        if pausedByInterruption {
+            diag("foreground after an interruption; resuming")
+            resume()
+        } else if !paused, !playback.engine.isRunning {
+            diag("foreground with audio stopped; restarting")
+            configureAudioSession()
+            rebuildEngine(reason: "foreground")
+        }
+    }
+
     private func callChanged(_ inCall: Bool) {
         diag(inCall ? "call started: Halltone stays silent" : "call ended")
         guard isActive else { return }
@@ -606,6 +651,8 @@ final class AppModel: ObservableObject {
 
     func resume() {
         pauseTask?.cancel()
+        interruptionTask?.cancel()
+        pausedByInterruption = false
         paused = false
         playback.muted = calls.inCall
         configureAudioSession()
