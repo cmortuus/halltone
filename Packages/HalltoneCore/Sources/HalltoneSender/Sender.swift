@@ -329,8 +329,10 @@ public final class Sender {
         nudgeLogTicks += 1
         if nudgeLogTicks % 10 == 0 {
             lock.lock()
-            for s in subscribers.values where s.nudges > 0 {
-                log.notice("nudges from \(s.name, privacy: .public): \(s.nudges) in 10 s, max gap \(Int(s.maxNudgeGapMs)) ms")
+            for (key, s) in subscribers {
+                // The phone's own view (from its keepalives): the only live playback health
+                // signal when it's away on cellular and its log can't be pulled.
+                log.notice("\(s.name, privacy: .public) @ \(key, privacy: .public): buffer \(s.bufferMs) ms, loss \(String(format: "%.1f", Double(s.lossPermille) / 10))%, nudges \(s.nudges) (max gap \(Int(s.maxNudgeGapMs)) ms)")
                 s.nudges = 0; s.maxNudgeGapMs = 0
             }
             lock.unlock()
