@@ -33,7 +33,7 @@ struct ContentView: View {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(mac.name)
                                     if mac.away {
-                                        Text("Not on this network · reachable over a VPN")
+                                        Text(mac.viaTailscale ? "Not on this network · over Tailscale" : "Not on this network · reachable over a VPN")
                                             .font(.caption).foregroundStyle(.secondary)
                                     }
                                 }
@@ -50,7 +50,7 @@ struct ContentView: View {
                 } header: {
                     Text("Macs")
                 } footer: {
-                    Text("Away from home? Connect your iPhone to your home network with a VPN (for example the WireGuard VPN built into UniFi, or Tailscale) and Halltone reaches your Mac over cellular, with a bit more delay.")
+                    Text("Away from home? Run Tailscale on your iPhone and your Mac (or connect to your home network with a VPN, such as the one built into UniFi) and Halltone reaches your Mac over cellular, with a bit more delay. Open Halltone once at home first so it learns your Mac's address.")
                 }
                 Section("Status") {
                     LabeledContent("State", value: stateText)

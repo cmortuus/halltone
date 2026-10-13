@@ -33,8 +33,11 @@ Halltone as usual:
 
 - **UniFi**: enable the built-in WireGuard VPN server (Settings → VPN → VPN Server), add the
   profile to the WireGuard app on your iPhone, and turn on "On-Demand" for cellular.
-- **Tailscale**: install it on the Mac and the iPhone. If the phone can't reach the Mac's LAN
-  address, add the Mac's Tailscale address with **+** in the app.
+- **Tailscale**: install it on the Mac and the iPhone and sign both into the same tailnet. The
+  Mac app advertises its Tailscale address alongside its LAN address; open Halltone on the phone
+  once at home so it learns it. Away from home the phone connects to the Tailscale address, and
+  if you walk out of Wi-Fi range while listening it switches over by itself. (You can also add
+  the Mac's Tailscale address or MagicDNS name by hand with **+**.)
 
 The phone remembers each Mac's address from home, so it connects over the VPN even though Bonjour
 discovery doesn't work there. On cellular it automatically switches to a larger buffer (about

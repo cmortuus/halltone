@@ -60,10 +60,19 @@ struct MacEntry: Identifiable, Hashable, Codable {
     /// Known from an earlier visit but not visible on the current network (e.g. away from home,
     /// reaching the Mac over a VPN at its remembered address). Not persisted.
     var away = false
+    /// From the TXT record: the Mac's Tailscale address. Bonjour doesn't cross Tailscale, so it's
+    /// remembered and used when the Mac isn't on the current network. Not persisted here.
+    var tailscaleHost: String?
+    /// Another address to try if `preferredHost` stops working (LAN ↔ Tailscale). Not persisted.
+    var alternateHost: String?
+    /// Reached over Tailscale rather than the local network.
+    var viaTailscale: Bool { preferredHost != nil && preferredHost == tailscaleHost }
 
-    static func bonjour(name: String, preferredHost: String? = nil, port: UInt16? = nil) -> MacEntry {
+    static func bonjour(name: String, preferredHost: String? = nil, port: UInt16? = nil,
+                        tailscaleHost: String? = nil) -> MacEntry {
         var e = MacEntry(id: "bonjour:\(name)", name: name, kind: .bonjour)
         e.preferredHost = preferredHost
+        e.tailscaleHost = tailscaleHost
         if let port { e.port = port }
         return e
     }
@@ -101,6 +110,8 @@ final class AppModel: ObservableObject {
         static let keepHeadphones = "keepHeadphones"
         /// [Mac id: "host:port"]: last advertised address of each Bonjour Mac.
         static let knownAddresses = "knownAddresses"
+        /// [Mac id: Tailscale IPv4]: from the TXT record, for reaching the Mac away from home.
+        static let knownTailscale = "knownTailscale"
     }
 
     @Published private(set) var discovered: [MacEntry] = []
@@ -139,13 +150,20 @@ final class AppModel: ObservableObject {
         knownAddresses.compactMap { id, hostPort -> MacEntry? in
             guard id.hasPrefix("bonjour:"), !discovered.contains(where: { $0.id == id }),
                   let (host, port) = Self.splitHostPort(hostPort) else { return nil }
-            var e = MacEntry.bonjour(name: String(id.dropFirst("bonjour:".count)), preferredHost: host, port: port)
+            // Away from home the LAN address is only reachable over a VPN into the home network;
+            // a Tailscale address works from anywhere both devices run Tailscale. Prefer it, and
+            // keep the LAN address as the fallback (and vice versa).
+            let ts = knownTailscale[id]
+            var e = MacEntry.bonjour(name: String(id.dropFirst("bonjour:".count)), preferredHost: ts ?? host,
+                                     port: port, tailscaleHost: ts)
+            e.alternateHost = ts == nil ? nil : host
             e.away = true
             return e
         }.sorted { $0.name < $1.name }
     }
 
     @Published private var knownAddresses: [String: String] = [:]
+    @Published private var knownTailscale: [String: String] = [:]
 
     private static func splitHostPort(_ s: String) -> (String, UInt16)? {
         guard let i = s.lastIndex(of: ":"), let p = UInt16(s[s.index(after: i)...]) else { return nil }
@@ -158,6 +176,7 @@ final class AppModel: ObservableObject {
     private let defaults = UserDefaults.standard
     private var browser: NWBrowser?
     private var pauseTask: Task<Void, Never>?
+    private let calls = CallWatcher()
     /// Bluetooth signal strength to the Mac, for Auto latency.
     private let proximity = MacProximity()
     private var proximityRunning = false
@@ -169,6 +188,7 @@ final class AppModel: ObservableObject {
         receiver = Receiver(sink: playback)
         autoConnect = defaults.object(forKey: Key.autoConnect) as? Bool ?? true
         knownAddresses = defaults.dictionary(forKey: Key.knownAddresses) as? [String: String] ?? [:]
+        knownTailscale = defaults.dictionary(forKey: Key.knownTailscale) as? [String: String] ?? [:]
         latencyMode = defaults.string(forKey: Key.latencyMode).flatMap(LatencyMode.init(rawValue:)) ?? .auto
         keepHeadphones = defaults.bool(forKey: Key.keepHeadphones)
         receiver.latencyMode = latencyMode
@@ -203,6 +223,7 @@ final class AppModel: ObservableObject {
             observers.append(nc.addObserver(forName: name, object: nil, queue: .main) { _ in diag("app \(label)") })
         }
         setupRemoteCommands()
+        calls.onChange = { [weak self] inCall in self?.callChanged(inCall) }
         startBrowsing()
         if autoConnect, let last = defaults.string(forKey: Key.lastMac) {
             if let m = manual.first(where: { $0.id == last }) {
@@ -269,10 +290,15 @@ final class AppModel: ObservableObject {
 
     private var connectedID: String?
     private var connectedHost: String?
+    /// The other address (LAN or Tailscale) to try if this one stops getting through.
+    private var connectedAlternate: String?
+    private var fallbackTask: Task<Void, Never>?
 
     private func connect(_ mac: MacEntry, code: UInt32) {
         connectedID = mac.id
         connectedHost = mac.preferredHost
+        connectedAlternate = mac.alternateHost
+        fallbackTask?.cancel()
         diag("connect → \(mac.name) via \(mac.preferredHost ?? (mac.kind == .manual ? mac.host : "Bonjour"))")
         selected = mac
         defaults.set(mac.id, forKey: Key.lastMac)
@@ -281,7 +307,7 @@ final class AppModel: ObservableObject {
         pauseTask?.cancel()
         // A previous session may have ended muted (headphones away, interruption); a muted
         // engine never reads the hand-off ring, so the new stream would never start playing.
-        playback.muted = false
+        playback.muted = calls.inCall
         configureAudioSession()
         activateAudioSession()
         receiver.connect(to: mac.endpoint, pairingCode: code, deviceName: UIDevice.current.name)
@@ -328,6 +354,7 @@ final class AppModel: ObservableObject {
     private func handleState(_ st: Receiver.State) {
         diag("state: \(st)")
         state = st
+        if case .reconnecting = st { scheduleAddressFallback() } else { fallbackTask?.cancel() }
         switch st {
         case .rejected(let why):
             if let mac = selected {
@@ -344,6 +371,23 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Still reconnecting after 5 s: the address may be unreachable from this network (LAN address
+    /// while away, or Tailscale switched off). Try the other one.
+    private func scheduleAddressFallback() {
+        guard fallbackTask == nil || fallbackTask!.isCancelled, let alt = connectedAlternate,
+              let id = connectedID, var mac = allMacs.first(where: { $0.id == id }) else { return }
+        fallbackTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            guard let self, !Task.isCancelled, case .reconnecting = self.state else { return }
+            let current = self.connectedHost
+            diag("no audio via \(current ?? "?") for 5 s; trying \(alt)")
+            mac.preferredHost = alt
+            mac.alternateHost = current
+            guard let code = Keychain.pairingCode(for: mac.pairingKey) ?? Self.debugPairingCode() else { return }
+            self.connect(mac, code: code)
+        }
+    }
+
     // MARK: - Discovery
 
     private func startBrowsing() {
@@ -355,14 +399,17 @@ final class AppModel: ObservableObject {
             var byName: [String: MacEntry] = [:]
             for r in results {
                 guard case .service(let name, _, _, _) = r.endpoint else { continue }
-                var addr: String?, port: UInt16?
+                var addr: String?, port: UInt16?, ts: String?
                 if case .bonjour(let txt) = r.metadata {
                     addr = txt["addr"].flatMap { $0.isEmpty ? nil : $0 }
                     port = txt["port"].flatMap(UInt16.init)
+                    ts = txt["ts"].flatMap { $0.isEmpty ? nil : $0 }
                 }
                 // The same Mac shows up once per interface; keep whichever result carries an address.
                 if byName[name]?.preferredHost == nil {
-                    byName[name] = .bonjour(name: name, preferredHost: addr, port: port)
+                    var e = MacEntry.bonjour(name: name, preferredHost: addr, port: port, tailscaleHost: ts)
+                    e.alternateHost = ts
+                    byName[name] = e
                 }
             }
             let entries = byName.values.sorted { $0.name < $1.name }
@@ -382,6 +429,20 @@ final class AppModel: ObservableObject {
         if known != knownAddresses {
             knownAddresses = known
             defaults.set(known, forKey: Key.knownAddresses)
+        }
+        var knownTS = knownTailscale
+        for e in entries { if let ts = e.tailscaleHost { knownTS[e.id] = ts } }
+        if knownTS != knownTailscale {
+            knownTailscale = knownTS
+            defaults.set(knownTS, forKey: Key.knownTailscale)
+        }
+        // Left the network the Mac is on while listening (e.g. walked out of Wi-Fi range): switch
+        // to its Tailscale address instead of retrying a LAN address that's out of reach.
+        if isActive, let id = connectedID, !entries.contains(where: { $0.id == id }),
+           let away = rememberedAway.first(where: { $0.id == id }), away.viaTailscale,
+           connectedHost != away.preferredHost {
+            diag("\(away.name) left the local network; switching to Tailscale (\(away.preferredHost ?? "?"))")
+            connect(away)
         }
         if selected == nil { selected = discovered.first ?? rememberedAway.first ?? manual.first }
         // Connected to a remembered address that the Mac no longer advertises (e.g. its DHCP
@@ -454,7 +515,13 @@ final class AppModel: ObservableObject {
         case .ended:
             let opts = AVAudioSession.InterruptionOptions(rawValue: n.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0)
             diag("interruption ended (resume=\(opts.contains(.shouldResume)))")
-            if opts.contains(.shouldResume), isActive { rebuildEngine(reason: "interruption ended") }
+            if calls.inCall, isActive {
+                // iOS says "resume" several times during one call; playing then puts the Mac's
+                // audio over the call. Stay silent but alive (mixable, muted) until it ends.
+                keepAlive(reason: "call in progress")
+            } else if opts.contains(.shouldResume), isActive {
+                rebuildEngine(reason: "interruption ended")
+            }
         @unknown default: break
         }
     }
@@ -507,15 +574,33 @@ final class AppModel: ObservableObject {
     }
 
     private func keepAliveWhileHeadphonesAway() {
-        diag("headphones away: keeping the app alive with a mixable session")
+        keepAlive(reason: "headphones away")
+    }
+
+    /// Silent but running (mixable session, muted engine), so iOS doesn't suspend the app and the
+    /// Mac keeps the subscription.
+    private func keepAlive(reason: String) {
+        diag("\(reason): keeping the app alive with a mixable session")
+        playback.muted = true
         configureAudioSession(mixable: true)
-        rebuildEngine(reason: "keep alive while headphones away")
+        rebuildEngine(reason: "keep alive: \(reason)")
+    }
+
+    private func callChanged(_ inCall: Bool) {
+        diag(inCall ? "call started: Halltone stays silent" : "call ended")
+        guard isActive else { return }
+        if inCall {
+            playback.muted = true
+        } else if !paused {
+            configureAudioSession()
+            rebuildEngine(reason: "call ended")
+        }
     }
 
     func resume() {
         pauseTask?.cancel()
         paused = false
-        playback.muted = false
+        playback.muted = calls.inCall
         configureAudioSession()
         if isActive { rebuildEngine(reason: "resume") }
     }
@@ -534,7 +619,7 @@ final class AppModel: ObservableObject {
                 self.activateAudioSession()
                 do {
                     try self.playback.restart()
-                    if !self.paused { self.playback.muted = false }
+                    if !self.paused, !self.calls.inCall { self.playback.muted = false }
                     diag("engine restarted (\(reason), attempt \(attempt + 1))")
                     return
                 } catch {
