@@ -9,6 +9,18 @@ import Foundation
 enum UserPresence {
     static let idleLimit: TimeInterval = 180
 
+    /// Input within this long: someone is definitely at the Mac right now.
+    static let recentInputLimit: TimeInterval = 20
+
+    static var inputRecent: Bool { idleSeconds < recentInputLimit && !CGDisplayIsAsleepMain }
+
+    private static var CGDisplayIsAsleepMain: Bool { CGDisplayIsAsleep(CGMainDisplayID()) != 0 }
+
+    private static var idleSeconds: TimeInterval {
+        guard let any = CGEventType(rawValue: ~0) else { return .infinity }
+        return CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: any)
+    }
+
     static var isAtMac: Bool {
         if CGDisplayIsAsleep(CGMainDisplayID()) != 0 { return false }
         if let session = CGSessionCopyCurrentDictionary() as? [String: Any],

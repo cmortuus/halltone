@@ -60,7 +60,10 @@ public final class Sender {
     public var canHoldHeadphones: (() -> Bool)?
     /// Whether someone is using this Mac right now (reported in STATUS; sent at once on change).
     public var userAtMac: (() -> Bool)?
+    /// Input in the last ~20 s (reported in STATUS; sent at once on change).
+    public var userInputRecent: (() -> Bool)?
     private var lastUserAtMac: Bool?
+    private var lastInputRecent: Bool?
     private var holdingHeadphones = false
     /// Uptime (ns) of the last captured frame that wasn't near-silent. Lets the app tell whether
     /// something was playing, and whether it stopped (e.g. paused when headphones disconnected).
@@ -285,6 +288,7 @@ public final class Sender {
         if lastControlFailed { flags.insert(.lastControlFailed) }
         if canHoldHeadphones?() == true { flags.insert(.canHoldHeadphones) }
         if userAtMac?() == true { flags.insert(.userAtMac) }
+        if userInputRecent?() == true { flags.insert(.userInputRecent) }
         let targetsNow: [sockaddr_storage]
         if let addresses { targetsNow = addresses } else { lock.lock(); targetsNow = targets; lock.unlock() }
         for a in targetsNow { sendControl(.status(flags: flags), to: a) }
@@ -307,7 +311,9 @@ public final class Sender {
         if let available = controlsAvailable?() {
             statusTicks += 1
             let atMac = userAtMac?()
-            let presenceChanged = atMac != lastUserAtMac
+            let inputRecent = userInputRecent?()
+            let presenceChanged = atMac != lastUserAtMac || inputRecent != lastInputRecent
+            lastInputRecent = inputRecent
             if presenceChanged, lastUserAtMac != nil {
                 log.notice("user at Mac: \(atMac ?? false)")
             }

@@ -51,6 +51,10 @@ public struct StatusFlags: OptionSet, Equatable {
     /// Someone is using the Mac right now (recent keyboard/mouse input, screen unlocked). The
     /// phone's Auto latency mode tracks it: close to real time at the Mac, a big buffer away.
     public static let userAtMac = StatusFlags(rawValue: 1 << 3)
+    /// Keyboard/mouse input on the Mac in the last ~20 s: someone is definitely there. Breaks
+    /// ties for the phone's Bluetooth proximity (a phone in a pocket at the desk reads like the
+    /// next room) and tells it what "at the desk" looks like.
+    public static let userInputRecent = StatusFlags(rawValue: 1 << 4)
 }
 
 public enum NakReason: UInt8 {

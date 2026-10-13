@@ -49,6 +49,8 @@ public final class Receiver {
         public var macCanHoldHeadphones: Bool?
         /// From the Mac's STATUS: someone is using the Mac (drives Auto latency). nil = unknown.
         public var macUserActive: Bool?
+        /// From the Mac's STATUS: keyboard/mouse input in the last ~20 s. nil = unknown.
+        public var macInputRecent: Bool?
         /// Bluetooth proximity to the Mac (see `phoneNearMac`). nil = unknown.
         public var phoneNearMac: Bool?
         /// What Auto latency acts on: near the Mac by Bluetooth if known, else the Mac's activity.
@@ -91,7 +93,9 @@ public final class Receiver {
     }
 
     private func updatePresence() {
-        let atMac = stats.phoneNearMac ?? (stats.macUserActive == true)
+        // Typing or mousing right now settles it; otherwise Bluetooth proximity if known, else
+        // the Mac's minutes-long activity window.
+        let atMac = stats.macInputRecent == true || (stats.phoneNearMac ?? (stats.macUserActive == true))
         guard atMac != stats.atMac else { return }
         stats.atMac = atMac
         if latencyMode == .auto, !onCellular, let pump {
@@ -300,8 +304,10 @@ public final class Receiver {
             let available = flags.contains(.controlsAvailable)
             let canHold = flags.contains(.canHoldHeadphones)
             let userActive = flags.contains(.userAtMac)
+            let inputRecent = flags.contains(.userInputRecent)
             if stats.macControlsAvailable != available || stats.macCanHoldHeadphones != canHold
-                || stats.macUserActive != userActive {
+                || stats.macUserActive != userActive || stats.macInputRecent != inputRecent {
+                stats.macInputRecent = inputRecent
                 stats.macControlsAvailable = available
                 stats.macCanHoldHeadphones = canHold
                 stats.macUserActive = userActive

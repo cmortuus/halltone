@@ -15,7 +15,7 @@ final class MacProximity: NSObject, CBCentralManagerDelegate, CBPeripheralDelega
     /// true near, false away, nil unknown (no Bluetooth, no permission, no beacon found yet).
     private(set) var near: Bool? { didSet { if near != oldValue { onChange?(near) } } }
     var onChange: ((Bool?) -> Void)?
-    /// Set while the Mac says someone is using it: feeds the "at the desk" baseline.
+    /// Set while the Mac sees keyboard/mouse input right now: feeds the "at the desk" baseline.
     var calibrating = false
     /// Smoothed signal strength (dBm), for diagnostics.
     private(set) var rssi: Double?
@@ -151,11 +151,11 @@ final class MacProximity: NSObject, CBCentralManagerDelegate, CBPeripheralDelega
         recent = Array((recent + [value]).suffix(5))
         let smoothed = recent.sorted()[recent.count / 2]
         rssi = smoothed
-        if calibrating, near != false, smoothed >= baseline - 8 {
-            // Learn the desk signal only from readings near it: the Mac counts as "in use" for
-            // minutes after the last keypress, and readings from walking away mustn't lower it.
-            // Clamped so a bad stretch can't make "near" absurdly strict or loose.
-            baseline = min(-45, max(-72, baseline + 0.05 * (smoothed - baseline)))
+        if calibrating {
+            // Someone is typing or mousing on the Mac right now, so this is what "at the desk"
+            // looks like, phone in a pocket included. Clamped so a bad stretch can't make
+            // "near" absurdly strict or loose.
+            baseline = min(-45, max(-75, baseline + 0.1 * (smoothed - baseline)))
         }
         if smoothed >= nearThreshold { nearRun += 1; farRun = 0 }
         else if smoothed < farThreshold { farRun += 1; nearRun = 0 }

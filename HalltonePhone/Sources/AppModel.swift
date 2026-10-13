@@ -187,7 +187,7 @@ final class AppModel: ObservableObject {
                 self?.updateProximity()
                 if s.state.isActive, Self.shouldLogStats() {
                     let rssi = self?.proximity.rssi.map { String(Int($0)) } ?? "-"
-                    diag("stats atMac=\(s.atMac) near=\(s.phoneNearMac.map(String.init) ?? "-") rssi=\(rssi) active=\(s.macUserActive.map(String.init) ?? "-") buf=\(s.bufferMs)/\(s.targetMs) loss=\(s.lossPercent)% pps=\(s.packetsPerSecond) under=\(s.underruns) cb=\(s.callbackFrames) gap=\(s.arrivalGapMs) maxgap10s=\(s.maxArrivalGapMs10s) timergap10s=\(s.maxTimerGapMs10s) bg=\(UIApplication.shared.applicationState == .background) engine=\(self?.playback.engine.isRunning ?? false)")
+                    diag("stats atMac=\(s.atMac) near=\(s.phoneNearMac.map(String.init) ?? "-") rssi=\(rssi) active=\(s.macUserActive.map(String.init) ?? "-") input=\(s.macInputRecent.map(String.init) ?? "-") buf=\(s.bufferMs)/\(s.targetMs) loss=\(s.lossPercent)% pps=\(s.packetsPerSecond) under=\(s.underruns) cb=\(s.callbackFrames) gap=\(s.arrivalGapMs) maxgap10s=\(s.maxArrivalGapMs10s) timergap10s=\(s.maxTimerGapMs10s) bg=\(UIApplication.shared.applicationState == .background) engine=\(self?.playback.engine.isRunning ?? false)")
                 }
             }
         }
@@ -482,7 +482,7 @@ final class AppModel: ObservableObject {
                 proximity.onChange = { [weak self] near in self?.receiver.phoneNearMac = near }
             }
             proximity.start(macName: stats.macName)
-            proximity.calibrating = stats.macUserActive == true
+            proximity.calibrating = stats.macInputRecent == true
         } else if proximityRunning {
             proximityRunning = false
             proximity.stop()
