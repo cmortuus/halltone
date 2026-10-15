@@ -58,7 +58,10 @@ final class SenderModel: ObservableObject {
     private var sender: Sender?
 
     init() {
-        muteWhileStreaming = defaults.bool(forKey: Key.mute)
+        // On unless turned off: while a phone listens, sound from the Mac's own speakers is just
+        // a delayed echo of what's in your ears. The tap mutes only while capturing, so the Mac
+        // is audible again as soon as no phone is connected.
+        muteWhileStreaming = defaults.object(forKey: Key.mute) as? Bool ?? true
         codec = CodecID(rawValue: UInt8(defaults.integer(forKey: Key.codec))) ?? .opus
         port = UInt16(defaults.integer(forKey: Key.port)) == 0 ? Constants.defaultPort : UInt16(defaults.integer(forKey: Key.port))
         launchAtLogin = SMAppService.mainApp.status == .enabled
