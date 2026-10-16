@@ -37,9 +37,15 @@ public enum ControlCommand: UInt8 {
     /// seconds (UDP); a Mac that doesn't know these drops them.
     case holdHeadphonesOn = 4
     case holdHeadphonesOff = 5
+    /// Explicit pause / play: the Mac presses its play/pause key only if that changes anything
+    /// (it knows whether something is playing from the captured audio). A plain toggle restarted
+    /// a video the user had already paused when taking AirPods out (iOS sends "pause" then).
+    /// Sent only to Macs that advertise `explicitPlayPause`.
+    case pause = 6
+    case play = 7
 
     /// The media-key commands (as opposed to settings like holdHeadphones*).
-    public var isMediaKey: Bool { rawValue <= 3 }
+    public var isMediaKey: Bool { self != .holdHeadphonesOn && self != .holdHeadphonesOff }
 }
 
 /// Bits of the STATUS message's `flags` byte.
@@ -59,6 +65,11 @@ public struct StatusFlags: OptionSet, Equatable {
     /// ties for the phone's Bluetooth proximity (a phone in a pocket at the desk reads like the
     /// next room) and tells it what "at the desk" looks like.
     public static let userInputRecent = StatusFlags(rawValue: 1 << 4)
+    /// The Mac understands CONTROL pause/play (not just the toggle).
+    public static let explicitPlayPause = StatusFlags(rawValue: 1 << 5)
+    /// Something on the Mac is playing (audible in the last ~2 s). The phone mirrors it on the
+    /// lock screen, which is what iOS uses to choose play vs pause for a headphone press.
+    public static let macPlaying = StatusFlags(rawValue: 1 << 6)
 }
 
 public enum NakReason: UInt8 {

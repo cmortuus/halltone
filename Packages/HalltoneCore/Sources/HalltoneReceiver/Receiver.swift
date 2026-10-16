@@ -51,6 +51,10 @@ public final class Receiver {
         public var macUserActive: Bool?
         /// From the Mac's STATUS: keyboard/mouse input in the last ~20 s. nil = unknown.
         public var macInputRecent: Bool?
+        /// The Mac understands explicit pause/play commands.
+        public var macExplicitPlayPause = false
+        /// Something is playing on the Mac (from its STATUS).
+        public var macPlaying = true
         /// Bluetooth proximity to the Mac (see `phoneNearMac`). nil = unknown.
         public var phoneNearMac: Bool?
         /// What Auto latency acts on: near the Mac by Bluetooth if known, else the Mac's activity.
@@ -376,6 +380,11 @@ public final class Receiver {
             let canHold = flags.contains(.canHoldHeadphones)
             let userActive = flags.contains(.userAtMac)
             let inputRecent = flags.contains(.userInputRecent)
+            stats.macExplicitPlayPause = flags.contains(.explicitPlayPause)
+            if stats.macExplicitPlayPause, stats.macPlaying != flags.contains(.macPlaying) {
+                stats.macPlaying = flags.contains(.macPlaying)
+                publish()
+            }
             if stats.macControlsAvailable != available || stats.macCanHoldHeadphones != canHold
                 || stats.macUserActive != userActive || stats.macInputRecent != inputRecent {
                 stats.macInputRecent = inputRecent

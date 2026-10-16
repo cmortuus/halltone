@@ -64,6 +64,12 @@ public final class Sender {
     public var userInputRecent: (() -> Bool)?
     private var lastUserAtMac: Bool?
     private var lastInputRecent: Bool?
+    private var lastPlaying = false
+
+    /// Captured audio was audible within the last 2 s.
+    public func isPlaying() -> Bool {
+        DispatchTime.now().uptimeNanoseconds &- lastAudibleUptimeNs.load() < 2_000_000_000
+    }
     private var holdingHeadphones = false
     /// Uptime (ns) of the last captured frame that wasn't near-silent. Lets the app tell whether
     /// something was playing, and whether it stopped (e.g. paused when headphones disconnected).
@@ -301,6 +307,8 @@ public final class Sender {
         if canHoldHeadphones?() == true { flags.insert(.canHoldHeadphones) }
         if userAtMac?() == true { flags.insert(.userAtMac) }
         if userInputRecent?() == true { flags.insert(.userInputRecent) }
+        flags.insert(.explicitPlayPause)
+        if isPlaying() { flags.insert(.macPlaying) }
         let targetsNow: [sockaddr_storage]
         if let addresses { targetsNow = addresses } else { lock.lock(); targetsNow = targets; lock.unlock() }
         for a in targetsNow { sendControl(.status(flags: flags), to: a) }
@@ -324,8 +332,10 @@ public final class Sender {
             statusTicks += 1
             let atMac = userAtMac?()
             let inputRecent = userInputRecent?()
-            let presenceChanged = atMac != lastUserAtMac || inputRecent != lastInputRecent
+            let playing = isPlaying()
+            let presenceChanged = atMac != lastUserAtMac || inputRecent != lastInputRecent || playing != lastPlaying
             lastInputRecent = inputRecent
+            lastPlaying = playing
             if presenceChanged, lastUserAtMac != nil {
                 log.notice("user at Mac: \(atMac ?? false)")
             }

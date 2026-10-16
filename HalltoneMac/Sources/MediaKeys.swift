@@ -46,7 +46,7 @@ enum MediaKeys {
         guard AXIsProcessTrusted() else { return false }
         let key: Int32
         switch cmd {
-        case .playPause: key = play
+        case .playPause, .play, .pause: key = play
         case .next: key = next
         case .previous: key = previous
         case .holdHeadphonesOn, .holdHeadphonesOff: return false

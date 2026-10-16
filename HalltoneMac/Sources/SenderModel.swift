@@ -96,9 +96,18 @@ final class SenderModel: ObservableObject {
                 if self.stats != slow { self.stats = slow }
             }
         }
-        s.onControl = { cmd in
+        s.onControl = { [weak s] cmd in
             // Called on the sender's receive thread; posting media keys is fine off-main.
-            MediaKeys.send(cmd)
+            // Pause/play press the toggle key only if it would change anything: something is
+            // "playing" if the capture heard it in the last 2 s.
+            let playing = s?.isPlaying() ?? false
+            switch cmd {
+            case .pause where !playing, .play where playing:
+                log.notice("\(String(describing: cmd), privacy: .public): already \(playing ? "playing" : "paused", privacy: .public); no key press")
+                return MediaKeys.isTrusted
+            default:
+                return MediaKeys.send(cmd)
+            }
         }
         s.controlsAvailable = { MediaKeys.isTrusted }
         s.canHoldHeadphones = { HeadphoneGuard.available }

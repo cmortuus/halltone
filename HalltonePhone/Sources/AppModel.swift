@@ -209,6 +209,7 @@ final class AppModel: ObservableObject {
             Task { @MainActor in
                 self?.stats = s
                 self?.updateProximity()
+                self?.syncNowPlayingRate()
                 if s.state.isActive, Self.shouldLogStats() {
                     let rssi = self?.proximity.rssi.map { String(Int($0)) } ?? "-"
                     diag("stats atMac=\(s.atMac) near=\(s.phoneNearMac.map(String.init) ?? "-") rssi=\(rssi) active=\(s.macUserActive.map(String.init) ?? "-") input=\(s.macInputRecent.map(String.init) ?? "-") buf=\(s.bufferMs)/\(s.targetMs) loss=\(s.lossPercent)% pps=\(s.packetsPerSecond) under=\(s.underruns) cb=\(s.callbackFrames) gap=\(s.arrivalGapMs) maxgap10s=\(s.maxArrivalGapMs10s) timergap10s=\(s.maxTimerGapMs10s) bg=\(UIApplication.shared.applicationState == .background) primed=\(s.jitterPrimed) resets=\(s.jitterResets) queued=\(s.queuedMs) handoff=\(s.handoffMs) muted=\(self?.playback.muted ?? false) concealed=\(s.concealedFrames) late=\(s.lateFrames) trimmed=\(s.trimmedFrames) stretched=\(s.stretchedFrames) resendAsked=\(s.resendRequested) recovered=\(s.resendRecovered) engine=\(self?.playback.engine.isRunning ?? false)")
@@ -712,8 +713,8 @@ final class AppModel: ObservableObject {
 
     private func setupRemoteCommands() {
         let c = MPRemoteCommandCenter.shared()
-        c.playCommand.addTarget { [weak self] _ in self?.remote(.playPause) ?? .commandFailed }
-        c.pauseCommand.addTarget { [weak self] _ in self?.remote(.playPause) ?? .commandFailed }
+        c.playCommand.addTarget { [weak self] _ in self?.remote(.play) ?? .commandFailed }
+        c.pauseCommand.addTarget { [weak self] _ in self?.remote(.pause) ?? .commandFailed }
         c.togglePlayPauseCommand.addTarget { [weak self] _ in self?.remote(.playPause) ?? .commandFailed }
         c.nextTrackCommand.addTarget { [weak self] _ in self?.remote(.next) ?? .commandFailed }
         c.previousTrackCommand.addTarget { [weak self] _ in self?.remote(.previous) ?? .commandFailed }
@@ -721,8 +722,13 @@ final class AppModel: ObservableObject {
 
     private func remote(_ cmd: ControlCommand) -> MPRemoteCommandHandlerStatus {
         guard isActive else { return .noActionableNowPlayingItem }
-        if paused { resume() }
-        receiver.sendControl(cmd)
+        diag("remote command: \(cmd)")
+        // Pause never brings Halltone back: iOS sends it when AirPods come out, and resuming then
+        // played through the phone's speaker.
+        if paused, cmd != .pause { resume() }
+        // An older Mac only knows the toggle.
+        let sent: ControlCommand = (cmd == .pause || cmd == .play) && !stats.macExplicitPlayPause ? .playPause : cmd
+        receiver.sendControl(sent)
         return .success
     }
 
@@ -755,7 +761,16 @@ final class AppModel: ObservableObject {
             MPMediaItemPropertyTitle: "Halltone",
             MPMediaItemPropertyArtist: macName,
             MPNowPlayingInfoPropertyIsLiveStream: true,
-            MPNowPlayingInfoPropertyPlaybackRate: 1.0,
+            MPNowPlayingInfoPropertyPlaybackRate: stats.macPlaying ? 1.0 : 0.0,
         ]
+        nowPlayingRate = stats.macPlaying
+    }
+
+    /// Mirror whether the Mac is playing on the lock screen: iOS picks play vs pause for a
+    /// headphone press from it, and explicit pause/play only act when they'd change something.
+    private var nowPlayingRate = true
+    private func syncNowPlayingRate() {
+        guard stats.state.isActive, stats.macPlaying != nowPlayingRate, !stats.macName.isEmpty else { return }
+        updateNowPlaying(macName: stats.macName)
     }
 }
