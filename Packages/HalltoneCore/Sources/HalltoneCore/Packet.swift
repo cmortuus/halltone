@@ -43,9 +43,19 @@ public enum ControlCommand: UInt8 {
     /// Sent only to Macs that advertise `explicitPlayPause`.
     case pause = 6
     case play = 7
+    /// The phone is (not) playing: paused while its headphones are out. While no phone is
+    /// listening the Mac stops capturing, which also unmutes its speakers, but keeps the
+    /// subscription so playback resumes instantly. Repeated every few seconds (UDP).
+    case listening = 8
+    case notListening = 9
 
-    /// The media-key commands (as opposed to settings like holdHeadphones*).
-    public var isMediaKey: Bool { self != .holdHeadphonesOn && self != .holdHeadphonesOff }
+    /// The media-key commands (as opposed to settings like holdHeadphones* and listening).
+    public var isMediaKey: Bool {
+        switch self {
+        case .playPause, .next, .previous, .pause, .play: return true
+        case .holdHeadphonesOn, .holdHeadphonesOff, .listening, .notListening: return false
+        }
+    }
 }
 
 /// Bits of the STATUS message's `flags` byte.

@@ -80,6 +80,17 @@ func runReceive(target: String, pairingCode: UInt32, name: String, wav: URL?, se
         }
     }
     receiver.connect(to: endpoint, pairingCode: pairingCode, deviceName: name)
+    // Test hook: pause (headphones out) partway through, then resume 8 s later.
+    if let after = ProcessInfo.processInfo.environment["HALLTONE_PAUSE_AFTER"].flatMap(Double.init) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + after) {
+            print("[recv] pausing (test)"); fflush(stdout)
+            receiver.listening = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
+                print("[recv] listening again (test)"); fflush(stdout)
+                receiver.listening = true
+            }
+        }
+    }
     // Test hook: disconnect and reconnect partway through (as the phone's Disconnect/Connect).
     if let after = ProcessInfo.processInfo.environment["HALLTONE_RECONNECT_AFTER"].flatMap(Double.init) {
         DispatchQueue.main.asyncAfter(deadline: .now() + after) {

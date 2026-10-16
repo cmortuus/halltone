@@ -172,6 +172,19 @@ public final class Receiver {
     private func sendHoldHeadphones() {
         guard case .subscribed = state, let c = connection else { return }
         send(.control(command: holdHeadphones ? .holdHeadphonesOn : .holdHeadphonesOff), over: c)
+        send(.control(command: listening ? .listening : .notListening), over: c)
+    }
+
+    /// False while the app is paused (headphones out): the Mac stops capturing and sending,
+    /// and no audio is expected, but the subscription stays up for an instant resume.
+    public var listening = true {
+        didSet {
+            queue.async { [self] in
+                // The Mac needs a moment to restart capture: don't call it lost too soon.
+                if listening { lastAudioAt = now() + 3 }
+                sendHoldHeadphones()
+            }
+        }
     }
 
     /// True while the phone has no Wi-Fi or wired path (reaching the Mac over cellular/VPN).
@@ -460,7 +473,7 @@ public final class Receiver {
         tickCount += 1
         switch state {
         case .subscribed:
-            if t - lastAudioAt > Constants.audioSilenceTimeout {
+            if listening, t - lastAudioAt > Constants.audioSilenceTimeout {
                 log.notice("no audio for \(Constants.audioSilenceTimeout)s; reconnecting")
                 state = .reconnecting
                 reconnectingSince = t

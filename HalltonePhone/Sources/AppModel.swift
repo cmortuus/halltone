@@ -312,6 +312,7 @@ final class AppModel: ObservableObject {
         defaults.set(mac.id, forKey: Key.lastMac)
         autoConnectPending = nil
         paused = false
+        receiver.listening = true
         pauseTask?.cancel()
         interruptionTask?.cancel()
         pausedByInterruption = false
@@ -596,7 +597,9 @@ final class AppModel: ObservableObject {
     }
 
     private func pauseForMissingHeadphones() {
-        pause(reason: "output device went away")
+        // Long grace: the Mac stops capturing (and unmutes) while we're paused, so staying
+        // subscribed costs little, and putting the AirPods back in resumes instantly.
+        pause(reason: "output device went away", grace: 1800)
     }
 
     /// `grace`: how long to stay subscribed before giving up. Headphones gone: 60 s. An
@@ -606,6 +609,7 @@ final class AppModel: ObservableObject {
     private func pause(reason: String, grace: TimeInterval = 60, recoverFromInterruption: Bool = false) {
         diag("\(reason); pausing (subscription kept for \(Int(grace)) s)")
         paused = true
+        receiver.listening = false
         playback.muted = true
         pauseTask?.cancel()
         pauseTask = Task { [weak self] in
@@ -670,6 +674,7 @@ final class AppModel: ObservableObject {
         interruptionTask?.cancel()
         pausedByInterruption = false
         paused = false
+        receiver.listening = true
         playback.muted = calls.inCall
         configureAudioSession()
         if isActive { rebuildEngine(reason: "resume") }

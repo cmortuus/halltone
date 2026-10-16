@@ -91,6 +91,8 @@ public final class Sender {
         var bufferMs = 0
         var lossPermille = 0
         var holdHeadphones = false
+        /// The phone said it isn't playing (headphones out). Kept subscribed, not captured for.
+        var paused = false
         /// Phone → Mac NUDGE timing (sent every 20 ms): shows whether the phone kept sending
         /// while its audio arrived in bursts (diagnostics, logged every 10 s).
         var lastNudge: TimeInterval?
@@ -264,9 +266,19 @@ public final class Sender {
             remove(key: key, reason: "bye")
         case .control(let cmd) where !cmd.isMediaKey:
             lock.lock()
-            subscribers[key]?.holdHeadphones = cmd == .holdHeadphonesOn
+            if let s = subscribers[key] {
+                switch cmd {
+                case .holdHeadphonesOn, .holdHeadphonesOff: s.holdHeadphones = cmd == .holdHeadphonesOn
+                case .listening, .notListening:
+                    let paused = cmd == .notListening
+                    if s.paused != paused { log.notice("\(s.name, privacy: .public) \(paused ? "paused" : "listening again", privacy: .public)") }
+                    s.paused = paused
+                default: break
+                }
+            }
             lock.unlock()
             updateHoldHeadphones()
+            updateCapture()
         case .control(let cmd):
             let ok = onControl?(cmd) ?? false
             if !ok { sendStatus(to: [address], lastControlFailed: true) }
@@ -284,7 +296,7 @@ public final class Sender {
         updateHoldHeadphones()
         if let removed {
             log.notice("subscriber left: \(removed.name, privacy: .public) (\(reason, privacy: .public))")
-            if empty { stopCapture() }
+            if empty { stopCapture() } else { updateCapture() }
             queue.async { self.publish() }
         }
     }
@@ -314,9 +326,19 @@ public final class Sender {
         for a in targetsNow { sendControl(.status(flags: flags), to: a) }
     }
 
+    /// Capture only while some phone is actually playing: a paused phone (headphones out) keeps
+    /// its subscription, but the Mac stops muting its speakers and sending audio.
+    private func updateCapture() {
+        lock.lock()
+        let anyListening = subscribers.values.contains { !$0.paused }
+        let anySubscriber = !subscribers.isEmpty
+        lock.unlock()
+        if anyListening { startCaptureIfNeeded() } else if anySubscriber { stopCapture() }
+    }
+
     private func updateHoldHeadphones() {
         lock.lock()
-        let want = subscribers.values.contains { $0.holdHeadphones }
+        let want = subscribers.values.contains { $0.holdHeadphones && !$0.paused }
         lock.unlock()
         queue.async { [self] in
             guard want != holdingHeadphones else { return }
