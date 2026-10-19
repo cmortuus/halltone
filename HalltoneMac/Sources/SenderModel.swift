@@ -121,6 +121,7 @@ final class SenderModel: ObservableObject {
         }
         let audible = s.lastAudibleUptimeNs
         headphoneGuard.lastAudibleUptimeNs = { audible.load() }
+        headphoneGuard.isStreamingSource = { [weak s] in s?.hasListeningSubscriber ?? false }
         do {
             try s.start()
             beacon.start()

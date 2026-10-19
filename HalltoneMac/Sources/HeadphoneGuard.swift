@@ -29,6 +29,9 @@ final class HeadphoneGuard {
     }
     /// Last time the capture heard something (uptime ns), from the sender.
     var lastAudibleUptimeNs: () -> UInt64 = { 0 }
+    /// Whether this Mac is the one streaming to a listening phone. Only then does it press play
+    /// after headphones leave; holding for a phone on another Mac must not start media here.
+    var isStreamingSource: () -> Bool = { false }
 
     private var currentDefault: AudioDeviceID = 0
     private var currentIsBluetooth = false
@@ -89,6 +92,7 @@ final class HeadphoneGuard {
     /// Headphones left the Mac. If something was playing right before and the capture has been
     /// silent since, the app paused itself on the disconnect: press play once.
     private func resumeIfPausedByDisconnect() {
+        guard isStreamingSource() else { return }
         let changedAt = DispatchTime.now().uptimeNanoseconds
         guard changedAt &- lastAudibleUptimeNs() < 1_500_000_000 else { return }
         resumeTask?.cancel()

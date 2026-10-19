@@ -177,6 +177,10 @@ final class AppModel: ObservableObject {
     private var browser: NWBrowser?
     private var pauseTask: Task<Void, Never>?
     private let calls = CallWatcher()
+    /// Other Halltone Macs nearby (not the one we listen to) are asked to guard the headphones
+    /// too: macOS automatic switching lets any of the user's Macs take the AirPods when it plays.
+    private var otherMacHoldTimer: Timer?
+    private var otherMacConnections: [String: NWConnection] = [:]
     private var interruptionTask: Task<Void, Never>?
     /// Paused by an audio interruption that may never end (not a call, not a lost output):
     /// opening the app resumes it.
@@ -231,6 +235,9 @@ final class AppModel: ObservableObject {
             })
         }
         setupRemoteCommands()
+        otherMacHoldTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.holdOnOtherMacs() }
+        }
         calls.onChange = { [weak self] inCall in self?.callChanged(inCall) }
         startBrowsing()
         if autoConnect, let last = defaults.string(forKey: Key.lastMac) {
@@ -642,6 +649,28 @@ final class AppModel: ObservableObject {
         playback.muted = true
         configureAudioSession(mixable: true)
         rebuildEngine(reason: "keep alive: \(reason)")
+    }
+
+    private func holdOnOtherMacs() {
+        let want = keepHeadphones && isActive && !paused
+        let others = discovered.filter { $0.id != connectedID && $0.preferredHost != nil }
+        guard want, !others.isEmpty else {
+            for c in otherMacConnections.values { c.cancel() }
+            otherMacConnections.removeAll()
+            return
+        }
+        let packet = Packet(seq: 0, session: 0, message: .control(command: .holdHeadphonesOn)).encode()
+        for mac in others {
+            let key = "\(mac.preferredHost!):\(mac.port)"
+            let c = otherMacConnections[key] ?? {
+                let c = NWConnection(to: mac.endpoint, using: .udp)
+                c.start(queue: .global(qos: .utility))
+                otherMacConnections[key] = c
+                diag("asking \(mac.name) to guard the headphones too")
+                return c
+            }()
+            c.send(content: packet, completion: .idempotent)
+        }
     }
 
     /// Opening the app while connected means "I want to hear it": revive audio that an

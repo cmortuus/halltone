@@ -71,6 +71,8 @@ public final class Sender {
         DispatchTime.now().uptimeNanoseconds &- lastAudibleUptimeNs.load() < 2_000_000_000
     }
     private var holdingHeadphones = false
+    /// Hold requests from phones subscribed to another Mac (address → last request).
+    private var remoteHolds: [String: Date] = [:]
     /// Uptime (ns) of the last captured frame that wasn't near-silent. Lets the app tell whether
     /// something was playing, and whether it stopped (e.g. paused when headphones disconnected).
     public let lastAudibleUptimeNs = AtomicUInt64()
@@ -266,6 +268,13 @@ public final class Sender {
             remove(key: key, reason: "bye")
         case .control(let cmd) where !cmd.isMediaKey:
             lock.lock()
+            if subscribers[key] == nil, cmd == .holdHeadphonesOn || cmd == .holdHeadphonesOff {
+                // A phone listening to another Mac: macOS automatic switching lets this Mac take
+                // its AirPods whenever it plays something, so guard them here too. No pairing
+                // code: LAN only, and the worst it can do is drop this Mac's Bluetooth
+                // headphones (rate-limited by the guard). Expires 15 s after the last request.
+                if cmd == .holdHeadphonesOn { remoteHolds[key] = Date() } else { remoteHolds[key] = nil }
+            }
             if let s = subscribers[key] {
                 switch cmd {
                 case .holdHeadphonesOn, .holdHeadphonesOff: s.holdHeadphones = cmd == .holdHeadphonesOn
@@ -336,9 +345,18 @@ public final class Sender {
         if anyListening { startCaptureIfNeeded() } else if anySubscriber { stopCapture() }
     }
 
+    /// Some subscribed phone is playing (not paused). Only then should this Mac press play when
+    /// its headphones leave; a remote hold alone mustn't start media here.
+    public var hasListeningSubscriber: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return subscribers.values.contains { !$0.paused }
+    }
+
     private func updateHoldHeadphones() {
         lock.lock()
-        let want = subscribers.values.contains { $0.holdHeadphones && !$0.paused }
+        let cutoff = Date().addingTimeInterval(-15)
+        remoteHolds = remoteHolds.filter { $0.value > cutoff }
+        let want = subscribers.values.contains { $0.holdHeadphones && !$0.paused } || !remoteHolds.isEmpty
         lock.unlock()
         queue.async { [self] in
             guard want != holdingHeadphones else { return }
@@ -370,6 +388,7 @@ public final class Sender {
                 sendStatus()
             }
         }
+        updateHoldHeadphones() // expires remote holds (cheap; acts only on a change)
         nudgeLogTicks += 1
         if nudgeLogTicks % 10 == 0 {
             lock.lock()
