@@ -335,6 +335,7 @@ final class AppModel: ObservableObject {
 
     func disconnect() {
         diag("disconnect requested")
+        allowSharedOutput = false
         pauseTask?.cancel()
         interruptionTask?.cancel()
         pausedByInterruption = false
@@ -574,16 +575,48 @@ final class AppModel: ObservableObject {
               let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
         let outputs = AVAudioSession.sharedInstance().currentRoute.outputs.map { "\($0.portType.rawValue):\($0.portName)" }
         diag("route change \(reason.rawValue) → \(outputs) engine running=\(playback.engine.isRunning)")
-        switch reason {
-        case .oldDeviceUnavailable:
-            guard isActive else { return }
+        guard isActive else { return }
+        if reason == .oldDeviceUnavailable {
             pauseForMissingHeadphones()
-        case .newDeviceAvailable:
-            if paused { resume() } else if isActive, !playback.engine.isRunning { rebuildEngine(reason: "new device, engine stopped") }
-        default:
-            // Any other route change that stopped the engine (e.g. category/override changes).
-            if isActive, !paused, !playback.engine.isRunning { rebuildEngine(reason: "route change \(reason.rawValue)") }
+            return
         }
+        // Halltone only plays into personal audio. CarPlay (which runs over AirPlay), AirPlay
+        // and speakers are shared: when the output moves there, pause and stay quiet instead of
+        // taking over the car or the TV.
+        guard Self.outputIsPersonal else {
+            sharedOutputAt = Date()
+            if !paused, !allowSharedOutput {
+                pause(reason: "output moved to \(outputs), not headphones", grace: 1800)
+                keepAlive(reason: "not headphones")
+            }
+            return
+        }
+        allowSharedOutput = false
+        if paused, reason == .newDeviceAvailable {
+            resume()
+        } else if !paused, !playback.engine.isRunning {
+            // Any other route change that stopped the engine (e.g. category/override changes).
+            rebuildEngine(reason: "route change \(reason.rawValue)")
+        }
+    }
+
+    /// Headphones of some kind: AirPods/Bluetooth, wired, USB. Not CarPlay, AirPlay or speakers.
+    private static var outputIsPersonal: Bool {
+        let personal: Set<AVAudioSession.Port> = [.bluetoothA2DP, .bluetoothHFP, .bluetoothLE, .headphones, .usbAudio]
+        return AVAudioSession.sharedInstance().currentRoute.outputs.contains { personal.contains($0.portType) }
+    }
+
+    /// When the output last moved to CarPlay/AirPlay/speaker. A car sends "play" to the last
+    /// app as CarPlay connects; that mustn't start the Mac.
+    private var sharedOutputAt = Date.distantPast
+    /// The user tapped Resume while on CarPlay/AirPlay/speaker: play there until the output
+    /// changes to something else (or they disconnect).
+    private var allowSharedOutput = false
+
+    /// The Resume button: an explicit request, so it may play into the car or a speaker.
+    func userResume() {
+        allowSharedOutput = !Self.outputIsPersonal
+        resume()
     }
 
     /// Bluetooth proximity runs only in Auto mode while connected to a Mac.
@@ -625,7 +658,7 @@ final class AppModel: ObservableObject {
                 try? await Task.sleep(for: .seconds(5))
                 guard !Task.isCancelled, let self, self.paused else { return }
                 if recoverFromInterruption, self.pausedByInterruption, !self.calls.inCall,
-                   !AVAudioSession.sharedInstance().isOtherAudioPlaying {
+                   !AVAudioSession.sharedInstance().isOtherAudioPlaying, Self.outputIsPersonal {
                     diag("interruption over (nothing else playing); resuming")
                     self.resume()
                     return
@@ -677,7 +710,7 @@ final class AppModel: ObservableObject {
     /// interruption stopped (in the foreground an exclusive session is allowed again).
     private func cameToForeground() {
         guard isActive, !calls.inCall else { return }
-        if pausedByInterruption {
+        if pausedByInterruption, Self.outputIsPersonal {
             diag("foreground after an interruption; resuming")
             resume()
         } else if !paused, !playback.engine.isRunning {
@@ -757,6 +790,14 @@ final class AppModel: ObservableObject {
     private func remote(_ cmd: ControlCommand) -> MPRemoteCommandHandlerStatus {
         guard isActive else { return .noActionableNowPlayingItem }
         diag("remote command: \(cmd)")
+        if cmd != .pause, cmd != .next, cmd != .previous,
+           Date().timeIntervalSince(sharedOutputAt) < 5 || (paused && !Self.outputIsPersonal) {
+            // The car's automatic "play" as CarPlay connects (or any play while we're paused on
+            // a shared output): don't start the Mac or take over the car. Open Halltone and tap
+            // Resume to listen there on purpose.
+            diag("ignoring \(cmd): output isn't headphones")
+            return .commandFailed
+        }
         // Pause never brings Halltone back: iOS sends it when AirPods come out, and resuming then
         // played through the phone's speaker.
         if paused, cmd != .pause { resume() }

@@ -118,7 +118,7 @@ struct ContentView: View {
             .safeAreaInset(edge: .bottom) {
                 VStack(spacing: 8) {
                     if model.paused {
-                        Button("Resume") { model.resume() }.buttonStyle(.bordered)
+                        Button("Resume") { model.userResume() }.buttonStyle(.bordered)
                     }
                     Button(action: model.toggle) {
                         Text(model.isActive ? "Disconnect" : "Connect")
