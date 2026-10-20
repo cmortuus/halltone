@@ -13,6 +13,14 @@ public final class PlaybackEngine: PlaybackSink {
     public let renderedFrames = AtomicUInt64()
     public let wake = DispatchSemaphore(value: 0)
     public let maxCallbackFrames = AtomicCounter()
+    private let outputLock = NSLock()
+    private var outputUnit: UnsafeMutableRawPointer?
+    private let generation = AtomicCounter()
+    public var outputAudioUnit: UnsafeMutableRawPointer? {
+        outputLock.lock(); defer { outputLock.unlock() }
+        return outputUnit
+    }
+    public var outputGeneration: UInt32 { generation.load() }
 
     public private(set) var engine = AVAudioEngine()
     private var sourceNode: AVAudioSourceNode?
@@ -67,6 +75,10 @@ public final class PlaybackEngine: PlaybackSink {
         engine.connect(node, to: engine.mainMixerNode, format: fmt)
         engine.prepare()
         try engine.start()
+        outputLock.lock()
+        outputUnit = engine.outputNode.audioUnit.map { UnsafeMutableRawPointer($0) }
+        outputLock.unlock()
+        generation.add(1)
         sourceNode = node
         running = true
         log.info("engine started; output \(self.engine.outputNode.outputFormat(forBus: 0).sampleRate) Hz")

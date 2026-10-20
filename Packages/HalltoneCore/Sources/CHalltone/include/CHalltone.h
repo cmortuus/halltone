@@ -31,6 +31,19 @@ void es_ring_reset(es_ring *r);
 #ifdef __cplusplus
 }
 #endif
+// Audio workgroup membership for a helper thread (see audio_workgroup.c). The token is opaque
+// storage for os_workgroup_join_token_s (32 bytes on Apple platforms; padded).
+typedef struct {
+    void *workgroup;
+    int joined;
+    unsigned char token[64] __attribute__((aligned(8)));
+} es_wg_membership;
+
+/// Makes the calling thread real-time and joins the output unit's audio workgroup. 0 on success.
+int es_wg_join(void *audio_unit, double period_ms, es_wg_membership *m);
+/// Leaves the workgroup joined by es_wg_join (no-op if not joined).
+void es_wg_leave(es_wg_membership *m);
+
 #endif
 
 /* Minimal atomics for counters shared between a real-time callback and a worker thread. */

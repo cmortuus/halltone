@@ -18,4 +18,13 @@ public protocol PlaybackSink: AnyObject {
     var maxCallbackFrames: AtomicCounter { get }
     func start() throws
     func stop()
+    /// The output AudioUnit (as a raw pointer) whose real-time workgroup the decode pump joins,
+    /// and a counter that changes whenever it's replaced. nil/0 for sinks without one.
+    var outputAudioUnit: UnsafeMutableRawPointer? { get }
+    var outputGeneration: UInt32 { get }
+}
+
+extension PlaybackSink {
+    public var outputAudioUnit: UnsafeMutableRawPointer? { nil }
+    public var outputGeneration: UInt32 { 0 }
 }

@@ -70,6 +70,8 @@ public final class Receiver {
         public var jitterResets: UInt64 = 0
         public var queuedMs = 0
         public var handoffMs = 0
+        /// Decode thread's audio-workgroup join result (0 = joined; nil before the first join).
+        public var workgroupStatus: Int?
         /// Retransmission: frames asked for again, and how many of those then arrived in time.
         public var resendRequested: UInt64 = 0
         public var resendRecovered: UInt64 = 0
@@ -514,6 +516,7 @@ public final class Receiver {
         stats.callbackFrames = Int(sink.maxCallbackFrames.load())
         stats.arrivalGapMs = Int(pump?.recentGapMs ?? 0)
         stats.jitterPrimed = js.primed
+        if let p = pump { let w = Int(Int64(bitPattern: p.workgroupStatus.load())); stats.workgroupStatus = w == -99 ? nil : w }
         stats.concealedFrames = js.lost
         stats.lateFrames = js.late
         stats.trimmedFrames = js.driftDrops

@@ -1,6 +1,7 @@
 import Foundation
 import os
 import HalltoneCore
+import CHalltone
 
 private let log = Logger(subsystem: Constants.logSubsystem, category: "Pump")
 
@@ -19,6 +20,8 @@ final class DecodePump {
     /// Extra decoded-ahead slack, grown when the render side runs dry while packets are queued
     /// (this thread was late, e.g. throttled with the screen locked). Capped at 100 ms.
     private var extraLowWater = 0
+    /// Result of the last audio-workgroup join (0 = joined), for diagnostics.
+    let workgroupStatus = AtomicUInt64(UInt64(bitPattern: -99))
     private var out: [Float]
     private var tmp: [Float]
     private var lastOut: [Float]
@@ -108,7 +111,23 @@ final class DecodePump {
     private func loop() {
         let ch = Constants.channels
         let n = frame * ch
+        // Join the output's real-time workgroup (again whenever the engine is rebuilt) so this
+        // thread isn't starved when the app is backgrounded: with a ~30 ms buffer, locking the
+        // screen used to stall it long enough to pop.
+        var membership = es_wg_membership()
+        var joinedGeneration: UInt32 = .max
+        defer { es_wg_leave(&membership) }
         while running {
+            let generation = sink.outputGeneration
+            if generation != joinedGeneration {
+                joinedGeneration = generation
+                es_wg_leave(&membership)
+                if let unit = sink.outputAudioUnit {
+                    let r = es_wg_join(unit, 10, &membership)
+                    workgroupStatus.store(UInt64(bitPattern: Int64(r)))
+                    log.notice("decode thread \(r == 0 ? "joined" : "couldn't join", privacy: .public) the audio workgroup (\(r))")
+                }
+            }
             lock.lock()
             let t = now()
             let under = sink.underruns.exchange(0)

@@ -11,7 +11,8 @@ let package = Package(
     ],
     targets: [
         // Tiny C target: lock-free SPSC ring buffer (stdatomic), usable from both audio callbacks.
-        .target(name: "CHalltone", path: "Sources/CHalltone"),
+        .target(name: "CHalltone", path: "Sources/CHalltone",
+                linkerSettings: [.linkedFramework("AudioToolbox")]),
         // Vendored libopus 1.5.2 (float build, no platform intrinsics), compiled for macOS and iOS.
         .target(
             name: "COpus",
@@ -39,7 +40,7 @@ let package = Package(
         // macOS-only: process-tap capture, UDP listener, subscriber tracking.
         .target(name: "HalltoneSender", dependencies: ["HalltoneCore"]),
         // macOS + iOS: UDP subscriber, jitter-buffer feed, AVAudioEngine playback.
-        .target(name: "HalltoneReceiver", dependencies: ["HalltoneCore"]),
+        .target(name: "HalltoneReceiver", dependencies: ["HalltoneCore", "CHalltone"]),
         .testTarget(name: "HalltoneCoreTests", dependencies: ["HalltoneCore", "HalltoneReceiver"]),
     ],
     swiftLanguageVersions: [.v5]
