@@ -637,6 +637,7 @@ final class AppModel: ObservableObject {
     }
 
     private func pauseForMissingHeadphones() {
+        outputGoneAt = Date()
         // Long grace: the Mac stops capturing (and unmutes) while we're paused, so staying
         // subscribed costs little, and putting the AirPods back in resumes instantly.
         pause(reason: "output device went away", grace: 1800)
@@ -801,11 +802,32 @@ final class AppModel: ObservableObject {
         // Pause never brings Halltone back: iOS sends it when AirPods come out, and resuming then
         // played through the phone's speaker.
         if paused, cmd != .pause { resume() }
+        if cmd == .pause, stats.macExplicitPlayPause {
+            // iOS sends "pause" for two different things. Halltone is always outputting audio
+            // (silence while the video is paused), so iOS thinks it's playing and turns every
+            // AirPods press into "pause", including the one meant to unpause. Taking the AirPods
+            // out also sends "pause", followed within a fraction of a second by the route change.
+            // Wait briefly: headphones gone → a real pause (no-op if already paused, so nothing
+            // restarts); still in → a button press, sent as the toggle.
+            let at = Date()
+            Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(600))
+                guard let self, self.isActive else { return }
+                let since = at.addingTimeInterval(-0.5)
+                let removed = self.outputGoneAt >= since || self.sharedOutputAt >= since || !Self.outputIsPersonal
+                diag(removed ? "pause with headphones removed: pause" : "pause from a headphone press: toggle")
+                self.receiver.sendControl(removed ? .pause : .playPause)
+            }
+            return .success
+        }
         // An older Mac only knows the toggle.
         let sent: ControlCommand = (cmd == .pause || cmd == .play) && !stats.macExplicitPlayPause ? .playPause : cmd
         receiver.sendControl(sent)
         return .success
     }
+
+    /// When headphones (or another personal output) last went away.
+    private var outputGoneAt = Date.distantPast
 
     /// A headphone/lock-screen press reached the Mac but it can't press keys yet. The user is
     /// probably away from both screens, so say so where they'll look: the lock screen.
