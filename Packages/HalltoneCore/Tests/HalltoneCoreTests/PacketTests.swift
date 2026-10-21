@@ -6,6 +6,7 @@ import Foundation
     @Test func roundTrips() {
         let messages: [Message] = [
             .subscribe(pairingCode: 1234, deviceName: "Caleb’s iPhone"),
+            .subscribe(pairingCode: 1234, deviceName: "Caleb’s iPhone", deviceID: "5E0D7A1C-0000-4000-8000-000000000001"),
             .keepalive(lastSeqReceived: 99, lossPermille: 12, bufferMs: 60),
             .bye,
             .resend(samplePositions: [0, 480, 960, UInt64.max]),
@@ -69,7 +70,7 @@ import Foundation
     @Test func longNamesTruncate() {
         let name = String(repeating: "é", count: 300)
         let p = Packet(seq: 0, session: 0, message: .subscribe(pairingCode: 0, deviceName: name))
-        guard case .subscribe(_, let decoded)? = Packet.decode(p.encode())?.message else { Issue.record("decode failed"); return }
+        guard case .subscribe(_, let decoded, _)? = Packet.decode(p.encode())?.message else { Issue.record("decode failed"); return }
         #expect(decoded.utf8.count <= 255)
         #expect(decoded.hasPrefix("ééé"))
     }

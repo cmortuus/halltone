@@ -93,6 +93,7 @@ public final class Sender {
         var bufferMs = 0
         var lossPermille = 0
         var holdHeadphones = false
+        var deviceID: String?
         /// The phone said it isn't playing (headphones out). Kept subscribed, not captured for.
         var paused = false
         /// Phone → Mac NUDGE timing (sent every 20 ms): shows whether the phone kept sending
@@ -216,7 +217,7 @@ public final class Sender {
     private func handle(_ packet: Packet, from address: sockaddr_storage) {
         let key = UDPSocket.describe(address)
         switch packet.message {
-        case .subscribe(let code, let name):
+        case .subscribe(let code, let name, let deviceID):
             if let required = config.pairingCode, required != code {
                 log.notice("rejecting \(name, privacy: .public): bad pairing code")
                 sendControl(.subscribeNak(reason: NakReason.badPairingCode.rawValue), to: address)
@@ -230,15 +231,28 @@ public final class Sender {
             if let existing = subscribers[key] {
                 existing.name = name
                 existing.lastSeen = Date()
+            } else if let deviceID, let (oldKey, old) = subscribers.first(where: { $0.value.deviceID == deviceID }) {
+                // Same phone, new address (Wi-Fi ↔ VPN): move it, keeping its state, instead of
+                // adding a second subscriber and timing the old one out.
+                subscribers.removeValue(forKey: oldKey)
+                let moved = Subscriber(address: address, name: name)
+                moved.deviceID = deviceID
+                moved.holdHeadphones = old.holdHeadphones
+                moved.paused = old.paused
+                subscribers[key] = moved
+                targets = subscribers.values.map(\.address)
+                log.notice("subscriber moved: \(name, privacy: .public) \(oldKey, privacy: .public) → \(key, privacy: .public)")
             } else {
-                subscribers[key] = Subscriber(address: address, name: name)
+                let s = Subscriber(address: address, name: name)
+                s.deviceID = deviceID
+                subscribers[key] = s
                 targets = subscribers.values.map(\.address)
                 log.notice("subscriber joined: \(name, privacy: .public) @ \(key, privacy: .public)")
             }
             lock.unlock()
             sendControl(ack, to: address)
             sendStatus(to: [address])
-            startCaptureIfNeeded()
+            updateCapture()
             queue.async { self.publish() }
         case .keepalive(_, let loss, let buf):
             lock.lock()

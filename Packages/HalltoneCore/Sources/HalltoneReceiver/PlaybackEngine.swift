@@ -44,6 +44,7 @@ public final class PlaybackEngine: PlaybackSink {
         let maxFrames = self.maxCallbackFrames
         _ = maxFrames.exchange(0)
         let scratch = self.scratch, scratchFrames = self.scratchFrames
+        let edge = EdgeState()
         let node = AVAudioSourceNode(format: fmt) { [weak self] isSilence, _, frameCount, abl -> OSStatus in
             let list = UnsafeMutableAudioBufferListPointer(abl)
             let frames = Int(frameCount)
@@ -62,7 +63,20 @@ public final class PlaybackEngine: PlaybackSink {
             let gotFrames = got / 2
             var i = 0
             while i < gotFrames { l[i] = scratch[2 * i]; r[i] = scratch[2 * i + 1]; i += 1 }
+            // Ramp at the edges of a dropout (~1.3 ms) instead of cutting: an abrupt jump to or
+            // from silence is what turns a gap into a pop.
+            let ramp = 64
+            if edge.starved, gotFrames > 0 {
+                let n = min(ramp, gotFrames)
+                for k in 0..<n { let g = Float(k) / Float(n); l[k] *= g; r[k] *= g }
+                edge.starved = false
+            }
             if gotFrames < frames {
+                if !edge.starved, gotFrames > 0 {
+                    let n = min(ramp, gotFrames)
+                    for k in 0..<n { let g = Float(n - k) / Float(n + 1); l[gotFrames - n + k] *= g; r[gotFrames - n + k] *= g }
+                }
+                edge.starved = true
                 (l + gotFrames).update(repeating: 0, count: frames - gotFrames)
                 (r + gotFrames).update(repeating: 0, count: frames - gotFrames)
                 underruns.add(1)
@@ -95,6 +109,9 @@ public final class PlaybackEngine: PlaybackSink {
 
     /// Rebuild with a fresh AVAudioEngine after a route change, interruption or media-services
     /// reset. A stale engine can refuse to start after the output route changed.
+    /// Render-thread-only state: whether the last callback ran out of audio.
+    private final class EdgeState { var starved = false }
+
     public func restart() throws {
         stop()
         engine = AVAudioEngine()

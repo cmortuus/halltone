@@ -79,6 +79,7 @@ func runReceive(target: String, pairingCode: UInt32, name: String, wav: URL?, se
             fflush(stdout)
         }
     }
+    receiver.deviceID = ProcessInfo.processInfo.environment["HALLTONE_DEVICE_ID"]
     receiver.connect(to: endpoint, pairingCode: pairingCode, deviceName: name)
     // Test hook: pause (headphones out) partway through, then resume 8 s later.
     if let after = ProcessInfo.processInfo.environment["HALLTONE_PAUSE_AFTER"].flatMap(Double.init) {

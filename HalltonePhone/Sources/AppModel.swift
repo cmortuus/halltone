@@ -201,6 +201,7 @@ final class AppModel: ObservableObject {
         keepHeadphones = defaults.bool(forKey: Key.keepHeadphones)
         receiver.latencyMode = latencyMode
         receiver.holdHeadphones = keepHeadphones
+        receiver.deviceID = UIDevice.current.identifierForVendor?.uuidString
         if let data = defaults.data(forKey: Key.manual), let list = try? JSONDecoder().decode([MacEntry].self, from: data) {
             manual = list
         }
@@ -231,6 +232,13 @@ final class AppModel: ObservableObject {
                               (UIApplication.protectedDataDidBecomeAvailableNotification, "unlocked")] {
             observers.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 diag("app \(label)")
+                if label == "locked" || label == "unlocked", self?.isActive == true {
+                    // How fast the output pulled audio around the lock (12000 per entry = real time).
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+                        guard let self else { return }
+                        diag("render per 250 ms around \(label): \(self.receiver.renderHistory())")
+                    }
+                }
                 if label == "foreground" { Task { @MainActor in self?.cameToForeground() } }
             })
         }

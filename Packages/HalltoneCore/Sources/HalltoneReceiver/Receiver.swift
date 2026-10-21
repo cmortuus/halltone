@@ -340,8 +340,19 @@ public final class Receiver {
     private func subscribe() {
         guard let c = connection else { return }
         lastSubscribeAt = now()
-        send(.subscribe(pairingCode: pairingCode, deviceName: deviceName), over: c)
+        send(.subscribe(pairingCode: pairingCode, deviceName: deviceName, deviceID: deviceID), over: c)
     }
+
+    /// Stable per-install ID so the Mac recognizes this phone when its address changes.
+    public var deviceID: String?
+
+    /// Frames the output pulled in each 250 ms tick, most recent last (diagnostics: does iOS
+    /// pull faster than real time around a screen lock?). 12000 = real time.
+    public func renderHistory() -> String {
+        queue.sync { renderDeltas.map(String.init).joined(separator: " ") }
+    }
+    private var renderDeltas: [Int] = []
+    private var lastRendered: UInt64 = 0
 
     private func send(_ message: Message, over c: NWConnection) {
         seq &+= 1
@@ -494,6 +505,9 @@ public final class Receiver {
             break
         }
         retryResends()
+        let rendered = sink.renderedFrames.load()
+        if lastRendered > 0 { renderDeltas.append(Int(rendered &- lastRendered)); if renderDeltas.count > 32 { renderDeltas.removeFirst() } }
+        lastRendered = rendered
         if tickCount % 4 == 0 { everySecond() }
     }
 

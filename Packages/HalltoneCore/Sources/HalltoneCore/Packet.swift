@@ -98,7 +98,9 @@ public struct Header: Equatable {
 }
 
 public enum Message: Equatable {
-    case subscribe(pairingCode: UInt32, deviceName: String)
+    /// `deviceID` (optional, appended; older Macs ignore it) identifies the phone across address
+    /// changes, e.g. switching between home Wi-Fi and a VPN.
+    case subscribe(pairingCode: UInt32, deviceName: String, deviceID: String? = nil)
     case keepalive(lastSeqReceived: UInt32, lossPermille: UInt16, bufferMs: UInt16)
     case bye
     case subscribeAck(codec: CodecID, sampleRate: UInt32, channels: UInt8, frameSamples: UInt16, macName: String)
@@ -152,9 +154,10 @@ public struct Packet: Equatable {
         w.u32(header.seq)
         w.u32(header.session)
         switch message {
-        case .subscribe(let code, let name):
+        case .subscribe(let code, let name, let id):
             w.u32(code)
             w.shortString(name)
+            if let id { w.shortString(id) }
         case .keepalive(let last, let loss, let buf):
             w.u32(last); w.u16(loss); w.u16(buf)
         case .bye:
@@ -191,7 +194,7 @@ public struct Packet: Equatable {
         switch type {
         case .subscribe:
             guard let code = r.u32(), let name = r.shortString() else { return nil }
-            message = .subscribe(pairingCode: code, deviceName: name)
+            message = .subscribe(pairingCode: code, deviceName: name, deviceID: r.shortString())
         case .keepalive:
             guard let last = r.u32(), let loss = r.u16(), let buf = r.u16() else { return nil }
             message = .keepalive(lastSeqReceived: last, lossPermille: loss, bufferMs: buf)

@@ -18,7 +18,9 @@ public enum Constants {
     public static let opusFrameSamples = 480
 
     public static let keepaliveInterval: TimeInterval = 1.0
-    public static let subscriberTimeout: TimeInterval = 5.0
+    /// A phone silent this long is dropped. Long enough to ride out a Wi-Fi hole or a switch
+    /// between Wi-Fi and a VPN without tearing down capture (5 s did, repeatedly).
+    public static let subscriberTimeout: TimeInterval = 20.0
     public static let audioSilenceTimeout: TimeInterval = 1.5
 
     /// Bluetooth LE beacon the Mac app advertises so the phone can tell from signal strength
