@@ -225,6 +225,16 @@ public final class JitterBuffer {
             lastFastDrop = now
             return .dropped(pos: a.pos, dropped: a.payload, nextPos: b.pos, next: b.payload)
         }
+        // Growing to a lock floor: about 2.5 s after the screen locks iOS pulls ~130 ms ahead
+        // (it deepens its output buffer), so get there first, a crossfaded 10 ms repeat every
+        // 150 ms, judged on the instantaneous depth (the smoothed one lags).
+        if lockFloorMs > 0, depth < Double(targetSamples) - tol, now - lastAdjustTime >= 0.15,
+           queue[0].pos == expectedPos {
+            stats.driftDups += 1
+            lastAdjustTime = now
+            depthEMA += Double(frame)
+            return .duplicate(nextPos: queue[0].pos, next: queue[0].payload)
+        }
         if now - lastAdjustTime >= config.minAdjustInterval {
             if depthEMA > Double(targetSamples) + tol, queue.count >= 2,
                queue[0].pos == expectedPos, queue[1].pos == expectedPos + frame {
@@ -359,8 +369,25 @@ public final class JitterBuffer {
         lastGapUpdate = now
     }
 
+    /// Minimum depth while the phone's screen is locked (0 = none). See the lock-floor growth in
+    /// `pull`: iOS pulls ~100-130 ms ahead a couple of seconds after the screen locks.
+    public private(set) var lockFloorMs: Double = 0
+
+    public func setLockFloor(ms: Double, now: TimeInterval) {
+        guard ms != lockFloorMs else { return }
+        lockFloorMs = ms
+        if ms > 0 {
+            setTarget(ms: stats.targetMs)
+        } else {
+            // Back to what the network needs; catch-up and drift trim the extra (iOS also hands
+            // its pulled-ahead audio back on unlock).
+            setTarget(ms: max(config.initialTargetMs, min(config.maxTargetMs, gapPeakMs + config.gapMarginMs)))
+        }
+        lastUnderrunTime = now
+    }
+
     private func setTarget(ms: Double) {
-        let clamped = min(config.maxTargetMs, max(config.minTargetMs, ms))
+        let clamped = min(max(config.maxTargetMs, lockFloorMs), max(config.minTargetMs, lockFloorMs, ms))
         stats.targetMs = clamped
         targetSamples = Int(clamped * config.sampleRate / 1000)
     }

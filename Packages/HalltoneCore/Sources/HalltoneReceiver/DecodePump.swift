@@ -84,6 +84,11 @@ final class DecodePump {
         jitter.retune(config, now: now())
     }
 
+    func setLockFloor(ms: Double) {
+        lock.lock(); defer { lock.unlock() }
+        jitter.setLockFloor(ms: ms, now: now())
+    }
+
     func flush() {
         lock.lock(); defer { lock.unlock() }
         jitter.flush(now: now())

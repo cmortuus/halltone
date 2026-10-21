@@ -343,6 +343,12 @@ public final class Receiver {
         send(.subscribe(pairingCode: pairingCode, deviceName: deviceName, deviceID: deviceID), over: c)
     }
 
+    /// The phone's screen is locked: keep at least 150 ms buffered, because iOS pulls ~100-130 ms
+    /// of audio ahead a couple of seconds after locking (and gives it back on unlock).
+    public var screenLocked = false {
+        didSet { queue.async { [self] in pump?.setLockFloor(ms: screenLocked ? 150 : 0) } }
+    }
+
     /// Stable per-install ID so the Mac recognizes this phone when its address changes.
     public var deviceID: String?
 
@@ -376,6 +382,7 @@ public final class Receiver {
                 let jb = JitterBuffer(config: effectiveConfig(frameSamples: Int(frameSamples)))
                 let p = DecodePump(jitter: jb, decoder: decoder, sink: sink)
                 p.onFrameScheduled = onFrameScheduled
+                if screenLocked { p.setLockFloor(ms: 150) }
                 p.start()
                 pump = p
                 stats.codec = codec

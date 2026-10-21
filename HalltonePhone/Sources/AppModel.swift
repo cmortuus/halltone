@@ -232,6 +232,8 @@ final class AppModel: ObservableObject {
                               (UIApplication.protectedDataDidBecomeAvailableNotification, "unlocked")] {
             observers.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 diag("app \(label)")
+                if label == "locked" { self?.receiver.screenLocked = true }
+                if label == "unlocked" { self?.receiver.screenLocked = false }
                 if label == "locked" || label == "unlocked", self?.isActive == true {
                     // How fast the output pulled audio around the lock (12000 per entry = real time).
                     DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in

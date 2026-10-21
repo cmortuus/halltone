@@ -271,6 +271,42 @@ extension JitterSim.Result: CustomStringConvertible {
         #expect(depthBack <= 160)
     }
 
+    /// Screen lock: the buffer grows from the desk level to the lock floor within ~2.5 s with no
+    /// gaps, and trims back after unlock.
+    @Test func lockFloorGrowsInTimeAndTrimsBack() {
+        let jb = JitterBuffer(config: .preset(.lowest, frameSamples: 480))
+        let frame = 480, cb = 256
+        var ring = 0, t = 0.0, nextRender = 0.0, sent = 0
+        var conceals = 0, underruns = 0
+        var depthAtLock = 0.0, depthAfterGrow = 0.0, depthAfterUnlock = 0.0
+        while t < 40 {
+            if t >= 10, t - 0.001 < 10 { depthAtLock = Double(jb.queuedSamples + ring) / 48; jb.setLockFloor(ms: 150, now: t) }
+            if t >= 12.5, t - 0.001 < 12.5 { depthAfterGrow = Double(jb.queuedSamples + ring) / 48 }
+            if t >= 25, t - 0.001 < 25 { jb.setLockFloor(ms: 0, now: t) }
+            while Double(sent) * 0.01 <= t {
+                jb.push(session: 1, samplePos: UInt64(sent * frame), payload: Data([1]), now: t); sent += 1
+            }
+            pump: while ring < cb + frame {
+                switch jb.pull(playoutAhead: ring, now: t) {
+                case .wait: break pump
+                case .conceal: ring += frame; conceals += 1
+                default: ring += frame
+                }
+            }
+            if t >= nextRender {
+                if ring >= cb { ring -= cb } else { ring = 0; if t > 2 { underruns += 1 } }
+                nextRender += Double(cb) / 48000
+            }
+            t += 0.001
+        }
+        depthAfterUnlock = Double(jb.queuedSamples + ring) / 48
+        print("lock floor: depth \(depthAtLock) → \(depthAfterGrow) ms in 2.5 s; after unlock \(depthAfterUnlock) ms")
+        #expect(depthAtLock < 80)
+        #expect(depthAfterGrow >= 135)
+        #expect(depthAfterUnlock < 90)
+        #expect(conceals == 0 && underruns == 0)
+    }
+
     /// Packets arrive in clumps every `period` + random(0..<spread) s, as from a phone in Wi-Fi
     /// power save; a 256-frame render callback. Counts after a 5 s warm-up.
     private func clumpRun(_ c: JitterBuffer.Config, period: Double, spread: Double) -> (target: Double, conceals: Int, underruns: Int) {
