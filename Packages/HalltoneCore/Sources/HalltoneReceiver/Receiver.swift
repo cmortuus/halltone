@@ -267,7 +267,16 @@ public final class Receiver {
 
     public func disconnect() {
         queue.async { [self] in
-            if let c = connection { send(.bye, over: c) }
+            if let c = connection {
+                // Cancelling right away dropped the BYE, so the Mac kept the phone (and stayed
+                // muted) until it timed out 20 s later. Close only once it's on the wire.
+                connection = nil
+                c.stateUpdateHandler = nil
+                seq &+= 1
+                let bye = Packet(seq: seq, session: 0, message: .bye).encode()
+                c.send(content: bye, completion: .idempotent)
+                c.send(content: bye, completion: .contentProcessed { _ in c.cancel() })
+            }
             tearDownConnection()
             timer?.cancel(); timer = nil
             nudgeTimer?.cancel(); nudgeTimer = nil
