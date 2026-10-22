@@ -393,6 +393,11 @@ public final class Receiver {
             frameSamplesForResend = UInt64(frameSamples)
             sendHoldHeadphones()
             lastAudioAt = now()
+        case .subscribeNak(let reason) where reason == NakReason.notSubscribed.rawValue:
+            guard case .subscribed = state else { break }
+            log.notice("the Mac lost our subscription; subscribing again")
+            state = .reconnecting
+            reconnectingSince = now()
         case .subscribeNak(let reason):
             let text = reason == NakReason.badPairingCode.rawValue ? "wrong pairing code" : "rejected (\(reason))"
             log.error("subscribe rejected: \(text, privacy: .public)")

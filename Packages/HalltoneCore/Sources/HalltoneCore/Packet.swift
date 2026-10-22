@@ -84,6 +84,8 @@ public struct StatusFlags: OptionSet, Equatable {
 
 public enum NakReason: UInt8 {
     case badPairingCode = 1
+    /// The Mac doesn't know this phone (it restarted, or timed the phone out): subscribe again.
+    case notSubscribed = 2
 }
 
 public struct Header: Equatable {

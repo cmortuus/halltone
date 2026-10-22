@@ -73,6 +73,8 @@ public final class Sender {
     private var holdingHeadphones = false
     /// Hold requests from phones subscribed to another Mac (address → last request).
     private var remoteHolds: [String: Date] = [:]
+    /// Unknown addresses that said they're paused, so their hold requests aren't remote holds.
+    private var pausedStrangers: [String: Date] = [:]
     /// Uptime (ns) of the last captured frame that wasn't near-silent. Lets the app tell whether
     /// something was playing, and whether it stopped (e.g. paused when headphones disconnected).
     public let lastAudibleUptimeNs = AtomicUInt64()
@@ -82,6 +84,9 @@ public final class Sender {
     /// The last ~2.5 s of audio datagrams, for RESEND.
     private let history = DatagramHistory(slots: 256)
     private let resentCounter = AtomicCounter()
+    /// Audio sends the kernel refused (EHOSTDOWN after an ARP miss, ENOBUFS, …) and the last errno.
+    private let sendFailures = AtomicCounter()
+    private let lastSendErrno = AtomicCounter()
 
     public private(set) var stats = Stats()
     public let config: Config
@@ -228,6 +233,7 @@ public final class Sender {
                                            channels: UInt8(Constants.channels), frameSamples: UInt16(frame),
                                            macName: config.macName)
             lock.lock()
+            remoteHolds[key] = nil
             if let existing = subscribers[key] {
                 existing.name = name
                 existing.lastSeen = Date()
@@ -256,10 +262,12 @@ public final class Sender {
             queue.async { self.publish() }
         case .keepalive(_, let loss, let buf):
             lock.lock()
-            if let s = subscribers[key] {
-                s.lastSeen = Date(); s.lossPermille = Int(loss); s.bufferMs = Int(buf)
-            }
+            let s = subscribers[key]
+            if let s { s.lastSeen = Date(); s.lossPermille = Int(loss); s.bufferMs = Int(buf) }
             lock.unlock()
+            // A phone that still thinks it's subscribed (this app restarted, or timed it out
+            // while it was paused and sending nothing we'd miss): have it subscribe again.
+            if s == nil { sendControl(.subscribeNak(reason: NakReason.notSubscribed.rawValue), to: address) }
         case .nudge:
             let t = ProcessInfo.processInfo.systemUptime
             lock.lock()
@@ -282,7 +290,13 @@ public final class Sender {
             remove(key: key, reason: "bye")
         case .control(let cmd) where !cmd.isMediaKey:
             lock.lock()
-            if subscribers[key] == nil, cmd == .holdHeadphonesOn || cmd == .holdHeadphonesOff {
+            if subscribers[key] == nil, cmd == .notListening {
+                // A paused phone we don't know (it holds only while listening), not one guarding
+                // from another Mac: never hold for it.
+                remoteHolds[key] = nil
+                pausedStrangers[key] = Date()
+            } else if subscribers[key] == nil, cmd == .holdHeadphonesOn || cmd == .holdHeadphonesOff,
+                      pausedStrangers[key].map({ Date().timeIntervalSince($0) > 15 }) ?? true {
                 // A phone listening to another Mac: macOS automatic switching lets this Mac take
                 // its AirPods whenever it plays something, so guard them here too. No pairing
                 // code: LAN only, and the worst it can do is drop this Mac's Bluetooth
@@ -370,6 +384,7 @@ public final class Sender {
         lock.lock()
         let cutoff = Date().addingTimeInterval(-15)
         remoteHolds = remoteHolds.filter { $0.value > cutoff }
+        pausedStrangers = pausedStrangers.filter { $0.value > cutoff }
         let want = subscribers.values.contains { $0.holdHeadphones && !$0.paused } || !remoteHolds.isEmpty
         lock.unlock()
         queue.async { [self] in
@@ -403,6 +418,11 @@ public final class Sender {
             }
         }
         updateHoldHeadphones() // expires remote holds (cheap; acts only on a change)
+        let failed = sendFailures.exchange(0)
+        if failed > 0 {
+            let e = Int32(lastSendErrno.load())
+            log.error("\(failed) audio sends failed in the last second: \(String(cString: strerror(e)), privacy: .public) (\(e))")
+        }
         nudgeLogTicks += 1
         if nudgeLogTicks % 10 == 0 {
             lock.lock()
@@ -668,7 +688,10 @@ public final class Sender {
         lock.lock()
         let addrs = targets
         lock.unlock()
-        for a in addrs { socket.send(ptr, len, to: a) }
+        for a in addrs where socket.send(ptr, len, to: a) < 0 {
+            _ = lastSendErrno.exchange(UInt32(errno))
+            sendFailures.add()
+        }
     }
 }
 #endif
