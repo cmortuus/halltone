@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <sys/socket.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -27,6 +28,13 @@ uint32_t es_ring_read(es_ring *r, float *dst, uint32_t count);
 uint32_t es_ring_skip(es_ring *r, uint32_t count);
 /// Consumer-side reset. Only call when the producer is stopped.
 void es_ring_reset(es_ring *r);
+
+/// UDP replies from the address the peer sent to (Macs on Ethernet + Wi-Fi). Enable once per
+/// socket; es_udp_recv reports the local address (16 bytes, IPv4 as ::ffff:a.b.c.d);
+/// es_udp_send_from sends from it, or lets the route choose when `local` is NULL.
+int es_udp_enable_pktinfo(int fd);
+long es_udp_recv(int fd, void *buf, size_t cap, struct sockaddr_storage *from, uint8_t local[16], int *has_local);
+long es_udp_send_from(int fd, const void *buf, size_t len, const struct sockaddr_storage *to, const uint8_t local[16]);
 
 #ifdef __cplusplus
 }

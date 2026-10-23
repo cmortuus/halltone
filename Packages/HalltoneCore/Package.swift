@@ -38,7 +38,7 @@ let package = Package(
         // Shared protocol + buffering logic (no audio hardware).
         .target(name: "HalltoneCore", dependencies: ["CHalltone", "COpus", "COpusShim"]),
         // macOS-only: process-tap capture, UDP listener, subscriber tracking.
-        .target(name: "HalltoneSender", dependencies: ["HalltoneCore"]),
+        .target(name: "HalltoneSender", dependencies: ["HalltoneCore", "CHalltone"]),
         // macOS + iOS: UDP subscriber, jitter-buffer feed, AVAudioEngine playback.
         .target(name: "HalltoneReceiver", dependencies: ["HalltoneCore", "CHalltone"]),
         .testTarget(name: "HalltoneCoreTests", dependencies: ["HalltoneCore", "HalltoneReceiver"]),
