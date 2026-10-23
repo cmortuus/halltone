@@ -4,6 +4,8 @@ public enum Constants {
     public static let logSubsystem = "com.halltone"
     public static let serviceType = "_halltone._udp"
     public static let defaultPort: UInt16 = 47800
+    /// TCP: phones upload their diagnostics log here once it reaches 25 MB.
+    public static let logUploadPort: UInt16 = 47801
     public static let protocolVersion: UInt8 = 1
     public static let magic: UInt16 = 0x4854 // "HT"
 

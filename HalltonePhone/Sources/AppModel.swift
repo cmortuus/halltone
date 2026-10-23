@@ -23,6 +23,12 @@ final class DiagFile {
     let url: URL
     private let formatter: DateFormatter
 
+    /// 25 MB; `-logShipBytes N` as a launch argument lowers it for testing.
+    private static let shipBytes: Int = {
+        let override = UserDefaults.standard.integer(forKey: "logShipBytes")
+        return override > 0 ? override : 25_000_000
+    }()
+
     private init() {
         url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("halltone.log")
         formatter = DateFormatter()
@@ -33,9 +39,9 @@ final class DiagFile {
         let line = "\(formatter.string(from: Date())) \(message)\n"
         queue.async { [url] in
             if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-               let size = attrs[.size] as? Int, size > 4_000_000 {
-                try? FileManager.default.removeItem(at: url.deletingPathExtension().appendingPathExtension("old.log"))
-                try? FileManager.default.moveItem(at: url, to: url.deletingPathExtension().appendingPathExtension("old.log"))
+               let size = attrs[.size] as? Int, size > Self.shipBytes {
+                // Full: hand it to the Mac (LogShipper) and start a new one.
+                LogShipper.shared.enqueue(url)
             }
             if let h = try? FileHandle(forWritingTo: url) {
                 h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
@@ -317,12 +323,17 @@ final class AppModel: ObservableObject {
 
     private var connectedID: String?
     private var connectedHost: String?
+    /// Where full diagnostics logs go (the connected Mac), and the code it accepts them with.
+    private var connectedLogHost: String?
+    private var connectedCode: UInt32?
     /// The other address (LAN or Tailscale) to try if this one stops getting through.
     private var connectedAlternate: String?
     private var fallbackTask: Task<Void, Never>?
 
     private func connect(_ mac: MacEntry, code: UInt32) {
         connectedID = mac.id
+        connectedCode = code
+        connectedLogHost = mac.preferredHost ?? (mac.kind == .manual ? mac.host : nil)
         connectedHost = mac.preferredHost
         connectedAlternate = mac.alternateHost
         fallbackTask?.cancel()
@@ -388,6 +399,7 @@ final class AppModel: ObservableObject {
         diag("state: \(st)")
         state = st
         if case .reconnecting = st { scheduleAddressFallback() } else { fallbackTask?.cancel() }
+        if !st.isActive { LogShipper.shared.target = nil }
         switch st {
         case .rejected(let why):
             if let mac = selected {
@@ -400,6 +412,9 @@ final class AppModel: ObservableObject {
             errorText = why
         case .subscribed(let name):
             updateNowPlaying(macName: name)
+            if let host = connectedHost ?? connectedLogHost, let code = connectedCode {
+                LogShipper.shared.target = .init(host: host, pairingCode: code, deviceName: UIDevice.current.name)
+            }
         default: break
         }
     }

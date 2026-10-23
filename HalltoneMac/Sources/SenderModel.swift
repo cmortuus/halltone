@@ -29,6 +29,7 @@ final class SenderModel: ObservableObject {
     @Published private(set) var holdingHeadphones = false
     private let headphoneGuard = HeadphoneGuard()
     private lazy var beacon = ProximityBeacon(name: macName)
+    private let phoneLogs = PhoneLogReceiver()
     private var permissionTimer: Timer?
     var panelVisible = false {
         didSet {
@@ -122,6 +123,8 @@ final class SenderModel: ObservableObject {
         let audible = s.lastAudibleUptimeNs
         headphoneGuard.lastAudibleUptimeNs = { audible.load() }
         headphoneGuard.isStreamingSource = { [weak s] in s?.hasListeningSubscriber ?? false }
+        phoneLogs.pairingCode = pairingCode
+        phoneLogs.start()
         do {
             try s.start()
             beacon.start()
