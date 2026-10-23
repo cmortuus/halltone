@@ -33,7 +33,7 @@ final class DiagFile {
         let line = "\(formatter.string(from: Date())) \(message)\n"
         queue.async { [url] in
             if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-               let size = attrs[.size] as? Int, size > 1_000_000 {
+               let size = attrs[.size] as? Int, size > 4_000_000 {
                 try? FileManager.default.removeItem(at: url.deletingPathExtension().appendingPathExtension("old.log"))
                 try? FileManager.default.moveItem(at: url, to: url.deletingPathExtension().appendingPathExtension("old.log"))
             }
@@ -215,7 +215,7 @@ final class AppModel: ObservableObject {
                 self?.stats = s
                 self?.updateProximity()
                 self?.syncNowPlayingRate()
-                if s.state.isActive, Self.shouldLogStats() {
+                if s.state.isActive, Self.shouldLogStats(s, paused: self?.paused ?? false) {
                     let rssi = self?.proximity.rssi.map { String(Int($0)) } ?? "-"
                     diag("stats atMac=\(s.atMac) near=\(s.phoneNearMac.map(String.init) ?? "-") rssi=\(rssi) active=\(s.macUserActive.map(String.init) ?? "-") input=\(s.macInputRecent.map(String.init) ?? "-") buf=\(s.bufferMs)/\(s.targetMs) loss=\(s.lossPercent)% pps=\(s.packetsPerSecond) under=\(s.underruns) cb=\(s.callbackFrames) gap=\(s.arrivalGapMs) maxgap10s=\(s.maxArrivalGapMs10s) timergap10s=\(s.maxTimerGapMs10s) bg=\(UIApplication.shared.applicationState == .background) primed=\(s.jitterPrimed) resets=\(s.jitterResets) queued=\(s.queuedMs) handoff=\(s.handoffMs) muted=\(self?.playback.muted ?? false) concealed=\(s.concealedFrames) late=\(s.lateFrames) trimmed=\(s.trimmedFrames) stretched=\(s.stretchedFrames) wg=\(s.workgroupStatus.map(String.init) ?? "-") resendAsked=\(s.resendRequested) recovered=\(s.resendRecovered) engine=\(self?.playback.engine.isRunning ?? false)")
                 }
@@ -282,13 +282,15 @@ final class AppModel: ObservableObject {
     /// environment) stands in for the Keychain, for automated Simulator runs. Compiled out of Release.
     /// Per-second stats in Debug builds; every 10 s in Release to keep the log small.
     private static var statsCounter = 0
-    private static func shouldLogStats() -> Bool {
-        #if DEBUG
-        return true
-        #else
+    private static var lastLoggedUnderruns: UInt64 = 0
+    /// Every 10 s while healthy; every second while packets are short or playback underruns, so
+    /// trouble is logged in detail but the file still covers hours (at 1/s it covered ~40 min).
+    private static func shouldLogStats(_ s: Receiver.Stats, paused: Bool) -> Bool {
         statsCounter += 1
-        return statsCounter % 10 == 1
-        #endif
+        let subscribed = if case .subscribed = s.state { true } else { false }
+        let troubled = !subscribed || (!paused && (s.underruns != lastLoggedUnderruns || s.packetsPerSecond < 90))
+        lastLoggedUnderruns = s.underruns
+        return troubled || statsCounter % 10 == 1
     }
 
     /// URL of the diagnostics log, for the in-app share button.
