@@ -88,7 +88,19 @@ public final class PlaybackEngine: PlaybackSink {
         engine.attach(node)
         engine.connect(node, to: engine.mainMixerNode, format: fmt)
         engine.prepare()
-        try engine.start()
+        do {
+            try engine.start()
+        } catch {
+            // An engine made before iOS's audio server restarted (media services reset while we
+            // sat idle) can never start again (-50 initializing the output). Try a fresh one.
+            log.notice("engine start failed (\(error)); retrying with a new engine")
+            engine.detach(node)
+            engine = AVAudioEngine()
+            engine.attach(node)
+            engine.connect(node, to: engine.mainMixerNode, format: fmt)
+            engine.prepare()
+            try engine.start()
+        }
         outputLock.lock()
         outputUnit = engine.outputNode.audioUnit.map { UnsafeMutableRawPointer($0) }
         outputLock.unlock()
@@ -107,14 +119,20 @@ public final class PlaybackEngine: PlaybackSink {
         log.info("engine stopped")
     }
 
-    /// Rebuild with a fresh AVAudioEngine after a route change, interruption or media-services
-    /// reset. A stale engine can refuse to start after the output route changed.
     /// Render-thread-only state: whether the last callback ran out of audio.
     private final class EdgeState { var starved = false }
 
+    /// Rebuild with a fresh AVAudioEngine after a route change, interruption or media-services
+    /// reset. A stale engine can refuse to start after the output route changed.
     public func restart() throws {
         stop()
         engine = AVAudioEngine()
         try start()
+    }
+
+    /// Drop the engine without starting a new one (used while idle); the next start() builds it.
+    public func discardEngine() {
+        stop()
+        engine = AVAudioEngine()
     }
 }

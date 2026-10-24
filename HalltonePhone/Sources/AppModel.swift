@@ -542,7 +542,14 @@ final class AppModel: ObservableObject {
             Task { @MainActor in self?.handleRouteChange(n) }
         })
         observers.append(nc.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.rebuildEngine(reason: "media services reset") }
+            Task { @MainActor in
+                guard let self else { return }
+                // iOS's audio server restarted: every session setting and engine is gone, even
+                // while we're idle (connecting later on the dead engine failed with -50).
+                diag("media services reset")
+                self.configureAudioSession()
+                if self.isActive { self.rebuildEngine(reason: "media services reset") } else { self.playback.discardEngine() }
+            }
         })
         observers.append(nc.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
