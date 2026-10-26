@@ -15,7 +15,7 @@ settings:
     # Apple Development team (the OU of the signing certificate on this Mac). Change if you use another account.
     DEVELOPMENT_TEAM: 35GARX3Y35
     MARKETING_VERSION: "1.0"
-    CURRENT_PROJECT_VERSION: "2"
+    CURRENT_PROJECT_VERSION: "3"
     ENABLE_USER_SCRIPT_SANDBOXING: NO
 
 packages:

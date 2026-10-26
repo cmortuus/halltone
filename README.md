@@ -111,21 +111,61 @@ or Run from the IDE with the phone selected).
 ## Wire protocol (v1)
 
 Big-endian, one datagram per message, ≤1200 bytes. 12-byte header: magic `0x4854`, version `1`,
-type, seq (u32), session (u32). Types: SUBSCRIBE 0x01, KEEPALIVE 0x02, BYE 0x03, SUBSCRIBE_ACK 0x04,
-SUBSCRIBE_NAK 0x05, AUDIO 0x10 (`samplePos u64, codec u8, len u16, payload`), CONTROL 0x20.
+type, seq (u32), session (u32). Types:
+
+| Type | Direction | Payload / meaning |
+|---|---|---|
+| SUBSCRIBE 0x01 | phone → Mac | pairing code, device name, optional device ID (lets the Mac move a phone to a new address, e.g. Wi‑Fi ↔ VPN, instead of adding a second subscriber) |
+| KEEPALIVE 0x02 | phone → Mac | every 1 s: last seq, loss ‰, buffer ms. Mac drops a phone after 20 s without one |
+| BYE 0x03 | phone → Mac | leaving (the Mac stops capturing and unmutes at once) |
+| SUBSCRIBE_ACK 0x04 | Mac → phone | codec, rate, channels, frame size, Mac name |
+| SUBSCRIBE_NAK 0x05 | Mac → phone | 1 = wrong pairing code; 2 = not subscribed (Mac restarted or timed the phone out): subscribe again |
+| STATUS 0x06 | Mac → phone | flags: controls available, last control failed, can hold headphones, user at Mac, recent input, explicit play/pause, playing |
+| NUDGE 0x07 | phone → Mac | tiny uplink packet every 20 ms on Wi‑Fi, keeps the phone's radio out of power save |
+| RESEND 0x08 | phone → Mac | up to 64 missing `samplePos` values; the Mac resends from a 256-packet history |
+| AUDIO 0x10 | Mac → phone | `samplePos u64, codec u8, len u16, payload` |
+| CONTROL 0x20 | both | play/pause, next, previous, hold headphones on/off, pause, play, listening, not listening |
+
 Codecs: 1 = PCM16 interleaved stereo (240-sample / 5 ms frames, ~1.5 Mbps); 2 = Opus 48 kHz stereo
 (480-sample / 10 ms frames, 128 kbps VBR, restricted-low-delay, in-band FEC flag on).
 
+The Mac replies from whichever of its addresses the phone sent to (`IPV6_PKTINFO` in,
+`IP_PKTINFO` out, `CHalltone/udp_pktinfo.c`). A Mac on Ethernet and Wi‑Fi has two addresses on
+one subnet; a plain `sendto` picks the source by route, and the phone's connected socket drops
+replies from an address it didn't contact.
+
+Phone logs (TCP 47801): `HTLOG1 <pairing code> <bytes> <base64 phone name>\n` then the file; the
+Mac answers `OK` or `NO <reason>`.
+
 ## Receiver behavior
 
-- Jitter buffer slotted by `samplePos`: handles reorder and duplicates; target depth starts at
-  60 ms, clamped to 30–250 ms; +20 ms on underruns or bursts of late packets, −5 ms after 10 s
-  without trouble. Lost frames use Opus PLC (or FEC from the next packet when present); PCM fades
-  to silence. Clock drift (smoothed depth ±15 ms from target) drops or duplicates one frame with a
-  crossfade, at most once per second. Session change or a >1 s jump flushes and re-primes.
-- No AUDIO for 1.5 s → "Reconnecting…", SUBSCRIBE re-sent every second, audio engine kept running
-  (so iOS keeps the app alive in the background). Wi‑Fi interface changes recreate the socket.
-- Interruptions pause and resume; AirPods removal pauses but keeps the subscription for 60 s.
+- **Latency modes.** Auto (default) uses Lowest while you're at the Mac and Stable when you're
+  away. "At the Mac" comes from Bluetooth signal strength to the Mac's beacon (median of 5,
+  calibrated while you're typing), else from the Mac's own "someone is using me" flag. Lowest:
+  40 ms start, 20–250 ms, no gap concealment (it sounded worse than waiting). Stable: 300 ms
+  start, 250–1500 ms. Cellular: 400 ms start, 300–2000 ms. Mode changes retune the depth with
+  crossfaded drops/repeats instead of flushing.
+- **Jitter buffer** slotted by `samplePos`: handles reorder and duplicates. The target follows the
+  recent peak arrival gap plus a margin. Underruns raise it only when the queue was actually
+  empty, and gaps longer than the ceiling are ignored, so a single blackout can't ratchet it up.
+  Clock drift drops or repeats one frame with a crossfade. A jump beyond the ceiling flushes and
+  re-primes.
+- **Retransmission.** Holes are requested with RESEND while there's still time to play them
+  (recovers nearly everything at 5% simulated loss).
+- **Screen lock.** About 2.5 s after the screen locks, iOS pulls ~100–130 ms of audio ahead for a
+  deeper output buffer, and gives it back for ~2 s after unlock. On lock the buffer grows to at
+  least 150 ms before that pull arrives, then shrinks back after unlock. Without this the lock
+  popped.
+- **Reconnect.** No AUDIO for 1.5 s → "Reconnecting…", SUBSCRIBE every second and a new socket
+  every 10 s; the audio engine keeps running so iOS doesn't suspend the app. Wi‑Fi interface
+  changes recreate the socket. A Mac that doesn't know the phone answers its keepalive with NAK 2,
+  and the phone subscribes again within a second.
+- **Pausing.** Headphones out, CarPlay/AirPlay/speaker output, or another app's audio pauses the
+  stream (only personal outputs play: Bluetooth, wired, USB), keeping the subscription for 30 min
+  (10 min for interruptions). While every phone is paused the Mac stops capturing. A headphone
+  press is told apart from removal (removal changes the route within 600 ms).
+- **iOS audio server restarts** (media services reset) rebuild the session and engine even while
+  idle; an engine that still won't start is replaced once before reporting an error.
 
 ## Testing
 
@@ -161,12 +201,27 @@ latency (buffer + hand-off ring + ~20 ms output), which is the rough check the s
   iOS availability wasn't verified, so libopus stays.
 - Logs: `log stream --predicate 'subsystem == "com.halltone"'`.
 - Debug-only hooks (compiled out of Release): the `-pairingCode` launch argument /
-  `HALLTONE_PAIRING_CODE` for automated Simulator runs, and per-second stats in the phone's
-  diagnostics log (Release logs every 10 s). Users share the log from About → Share diagnostics log.
+  `HALLTONE_PAIRING_CODE` for automated Simulator runs. `-logShipBytes N` lowers the phone's
+  log-upload size for testing.
+
+### Diagnostics
+
+- **Phone:** `Documents/halltone.log`: state changes, routes, interruptions, engine restarts,
+  lock/unlock render rates, and a stats line every 10 s. While packets are short or playback
+  underruns it logs every second. Pull it with `scripts/phone-log.sh` (development builds); users
+  share it from About → Share diagnostics log. At 25 MB the file moves to `Documents/LogOutbox/`
+  (capped at 100 MB) and is uploaded to the Mac the phone is connected to.
+- **Mac:** uploaded phone logs land in `~/Library/Logs/Halltone/Phones/<phone>/`, oldest deleted
+  beyond 5 GB. The app logs to the unified log (`/usr/bin/log show --predicate 'subsystem ==
+  "com.halltone"' --info`; in zsh `log` is a builtin). Every 10 s it logs each phone's own view
+  (buffer, loss, nudges, max gap; a low nudge count means the phone stopped hearing the Mac) and,
+  once a second, any audio sends the kernel refused.
+- **Reading a dropout:** "subscriber moved" twice ~10 s apart on the Mac while the phone says
+  "reconnecting" means the phone's packets reach the Mac but nothing gets back.
 - App Store material (listing copy, review notes, privacy answers, screenshots) is in
   `docs/app-store/`.
 
-## Status and known issues (2026-10-10)
+## Status and known issues
 
 Verified end to end on a real iPhone 15 Pro (iOS 27) with AirPods Pro: Bonjour discovery, pairing,
 background playback, automatic reconnect after Mac app restarts, and AirPods moving between the
@@ -188,14 +243,22 @@ Lessons that shaped the design:
 - **Output device changes** (AirPods moving) swap the tap underneath a running encoder, which
   pads with silence, so subscribers see no gap and `samplePos` stays continuous.
 - **Headroom.** Program audio often hits full scale; the phone soft-limits above −0.9 dBFS.
-- If YouTube on the Mac still plays into the AirPods while they are on the phone, enable
-  "Mute Mac speakers while streaming".
+- **Mute while streaming** is on by default: the tap mutes the Mac's output only while capturing
+  for a listening phone, so you don't hear a delayed echo from the Mac.
+- **AirPods and several Macs.** macOS automatic switching lets any of the user's Macs take the
+  AirPods when it plays. While listening, the phone asks every Halltone Mac on the network to
+  guard them; a Mac that grabs them switches back to its speakers and drops its Bluetooth link.
+  Only the streaming Mac presses play afterwards. A hold request from a phone that says it's
+  paused never counts.
+- **One-way Wi‑Fi outages.** On a UniFi network with the Mac on Wi‑Fi, the phone sometimes stopped
+  receiving for ~30 s while its own packets still reached the Mac. The Mac's Wi‑Fi reported every
+  frame delivered and no sends failed, which points at the access point side, likely roaming.
+  Putting the Mac on Ethernet is the suggested fix (still being verified).
+- **AirPods dropping off the phone** every minute or two showed up as "route change 2 → Speaker"
+  with neither Mac taking them. That's the AirPods (ear detection, case, battery), not Halltone.
 
 Sender CPU while streaming Opus: ~3.5% (CLI) / ~3.9% (menu bar app), down from ~8% after moving to
 a raw UDP socket with a preallocated datagram. Idle: ~0%.
-
-Phone diagnostics: the app appends to `Documents/halltone.log` (state, route changes, engine
-restarts, per-second buffer stats); pull it with `scripts/phone-log.sh`.
 
 Testing tips:
 
