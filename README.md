@@ -94,7 +94,9 @@ or Run from the IDE with the phone selected).
 1. **AirPods automatic switching will fight this.** If the AirPods are paired to both the Mac and
    the iPhone they may jump back to the Mac when it plays audio. On the Mac: System Settings →
    Bluetooth → AirPods ⓘ → *Connect to This Mac: "When Last Connected to This Mac"*. Do the same on
-   the iPhone if needed.
+   the iPhone if needed. The phone's **Keep headphones on this iPhone** setting (on by default)
+   also has every Halltone Mac hand the AirPods back while the phone listens; the Mac asks for
+   Bluetooth access the first time it does.
 2. Intended workflow: at the desk, AirPods connect directly to the Mac (no delay). When leaving,
    open Halltone on the phone and tap **Connect**, then move the AirPods to the phone
    (Control Center → AirPlay icon → AirPods).

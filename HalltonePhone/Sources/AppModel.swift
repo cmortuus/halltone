@@ -204,7 +204,7 @@ final class AppModel: ObservableObject {
         knownAddresses = defaults.dictionary(forKey: Key.knownAddresses) as? [String: String] ?? [:]
         knownTailscale = defaults.dictionary(forKey: Key.knownTailscale) as? [String: String] ?? [:]
         latencyMode = defaults.string(forKey: Key.latencyMode).flatMap(LatencyMode.init(rawValue:)) ?? .auto
-        keepHeadphones = defaults.bool(forKey: Key.keepHeadphones)
+        keepHeadphones = defaults.object(forKey: Key.keepHeadphones) as? Bool ?? true
         receiver.latencyMode = latencyMode
         receiver.holdHeadphones = keepHeadphones
         receiver.deviceID = UIDevice.current.identifierForVendor?.uuidString
