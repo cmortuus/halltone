@@ -842,17 +842,30 @@ final class AppModel: ObservableObject {
             // iOS sends "pause" for two different things. Halltone is always outputting audio
             // (silence while the video is paused), so iOS thinks it's playing and turns every
             // AirPods press into "pause", including the one meant to unpause. Taking the AirPods
-            // out also sends "pause", followed within a fraction of a second by the route change.
-            // Wait briefly: headphones gone → a real pause (no-op if already paused, so nothing
-            // restarts); still in → a button press, sent as the toggle.
+            // out also sends "pause". While the Mac plays, both mean pause.
+            if stats.macPlaying {
+                pendingPress?.cancel(); pendingPress = nil
+                receiver.sendControl(.pause)
+                return .success
+            }
+            // Mac paused: a press means play, taking them out means nothing. Each earbud coming
+            // out sends its own "pause" (seen 2 s apart) and the route only changes ~1.3 s after
+            // the last, so wait for it; a second "pause" meanwhile is the other earbud.
+            if pendingPress != nil {
+                pendingPress?.cancel(); pendingPress = nil
+                diag("second pause while paused: headphones coming out; ignoring")
+                return .success
+            }
             let at = Date()
-            Task { [weak self] in
-                try? await Task.sleep(for: .milliseconds(600))
-                guard let self, self.isActive else { return }
+            pendingPress = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(3))
+                guard let self, !Task.isCancelled else { return }
+                self.pendingPress = nil
+                guard self.isActive else { return }
                 let since = at.addingTimeInterval(-0.5)
                 let removed = self.outputGoneAt >= since || self.sharedOutputAt >= since || !Self.outputIsPersonal
-                diag(removed ? "pause with headphones removed: pause" : "pause from a headphone press: toggle")
-                self.receiver.sendControl(removed ? .pause : .playPause)
+                diag(removed ? "pause with headphones removed: nothing to do" : "pause from a headphone press: play")
+                if !removed { self.receiver.sendControl(.play) }
             }
             return .success
         }
@@ -864,6 +877,8 @@ final class AppModel: ObservableObject {
 
     /// When headphones (or another personal output) last went away.
     private var outputGoneAt = Date.distantPast
+    /// A "pause" that arrived while the Mac was paused, waiting to see whether it was a press.
+    private var pendingPress: Task<Void, Never>?
 
     /// A headphone/lock-screen press reached the Mac but it can't press keys yet. The user is
     /// probably away from both screens, so say so where they'll look: the lock screen.

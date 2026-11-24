@@ -97,6 +97,7 @@ final class SenderModel: ObservableObject {
                 if self.stats != slow { self.stats = slow }
             }
         }
+        let pauseWaiting = AtomicCounter()
         s.onControl = { [weak s] cmd in
             // Called on the sender's receive thread; posting media keys is fine off-main.
             // Pause/play press the toggle key only if it would change anything: something is
@@ -106,7 +107,28 @@ final class SenderModel: ObservableObject {
             case .pause where !playing, .play where playing:
                 log.notice("\(String(describing: cmd), privacy: .public): already \(playing ? "playing" : "paused", privacy: .public); no key press")
                 return MediaKeys.isTrusted
+            case .pause where (s.map { Self.silentNs($0) } ?? 0) > 250_000_000:
+                // Silent now but heard within 2 s: a quiet moment, or paused a moment ago, which is
+                // how AirPods usually come out (each earbud sends "pause"; the key is a toggle, so
+                // pressing it then restarts the video). Wait until it's clear; one wait at a time.
+                guard let s, pauseWaiting.exchange(1) == 0 else { return MediaKeys.isTrusted }
+                // Only reads the capture's atomic last-audible time.
+                nonisolated(unsafe) let sender = s
+                DispatchQueue.global(qos: .userInitiated).async {
+                    defer { _ = pauseWaiting.exchange(0) }
+                    while sender.isPlaying() {
+                        if Self.silentNs(sender) < 100_000_000 {
+                            log.notice("pause: sound came back; pressing pause")
+                            _ = MediaKeys.send(.pause)
+                            return
+                        }
+                        Thread.sleep(forTimeInterval: 0.05)
+                    }
+                    log.notice("pause: silent 2 s, already paused; no key press")
+                }
+                return MediaKeys.isTrusted
             default:
+                if cmd == .pause, pauseWaiting.load() != 0 { return MediaKeys.isTrusted }
                 return MediaKeys.send(cmd)
             }
         }
@@ -186,5 +208,10 @@ final class SenderModel: ObservableObject {
         } catch {
             log.error("launch at login: \(error)")
         }
+    }
+
+    /// How long the capture has been silent (ns).
+    nonisolated private static func silentNs(_ s: Sender) -> UInt64 {
+        DispatchTime.now().uptimeNanoseconds &- s.lastAudibleUptimeNs.load()
     }
 }

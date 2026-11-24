@@ -1,7 +1,7 @@
 import CHalltone
 
 /// Heap-allocated atomic counters for use between a real-time callback and worker threads.
-public final class AtomicCounter {
+public final class AtomicCounter: @unchecked Sendable {
     private let p: UnsafeMutablePointer<UInt32>
     public init() { p = .allocate(capacity: 1); p.initialize(to: 0) }
     deinit { p.deallocate() }
@@ -10,7 +10,7 @@ public final class AtomicCounter {
     @inline(__always) public func exchange(_ v: UInt32) -> UInt32 { es_atomic_exchange_u32(p, v) }
 }
 
-public final class AtomicUInt64 {
+public final class AtomicUInt64: @unchecked Sendable {
     private let p: UnsafeMutablePointer<UInt64>
     public init(_ v: UInt64 = 0) { p = .allocate(capacity: 1); p.initialize(to: v) }
     deinit { p.deallocate() }

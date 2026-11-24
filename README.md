@@ -164,8 +164,11 @@ Mac answers `OK` or `NO <reason>`.
   and the phone subscribes again within a second.
 - **Pausing.** Headphones out, CarPlay/AirPlay/speaker output, or another app's audio pauses the
   stream (only personal outputs play: Bluetooth, wired, USB), keeping the subscription for 30 min
-  (10 min for interruptions). While every phone is paused the Mac stops capturing. A headphone
-  press is told apart from removal (removal changes the route within 600 ms).
+  (10 min for interruptions). While every phone is paused the Mac stops capturing. iOS sends
+  "pause" for both a headphone press and each earbud coming out: while the Mac plays it's sent as
+  pause; while it's paused the phone waits 3 s and sends play only if the route didn't change and
+  no second "pause" came. The Mac's media key is a toggle, so a pause while the capture is silent
+  but was audible within 2 s waits until sound returns (press) or 2 s of silence (no press).
 - **iOS audio server restarts** (media services reset) rebuild the session and engine even while
   idle; an engine that still won't start is replaced once before reporting an error.
 
