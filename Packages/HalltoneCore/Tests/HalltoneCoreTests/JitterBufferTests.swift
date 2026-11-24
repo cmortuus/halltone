@@ -307,6 +307,46 @@ extension JitterSim.Result: CustomStringConvertible {
         #expect(conceals == 0 && underruns == 0)
     }
 
+    /// Screen locked on Wi-Fi that delivers in ~100 ms clumps (seen 2026-11-22): the depth saws
+    /// by a clump's worth, which must not keep the lock-floor growth repeating at every trough
+    /// while drift drops at every peak (heard as warble). Counts once the floor is reached.
+    @Test func lockFloorSettlesOnClumpedWifi() {
+        var rng = SplitMix(seed: 7)
+        let jb = JitterBuffer(config: .preset(.lowest, frameSamples: 480))
+        let frame = 480, cb = 256
+        var ring = 0, t = 0.0, nextRender = 0.0, sent = 0, lastRelease = 0.0, nextGap = 0.1
+        var held: [UInt64] = []
+        var drops = 0, dups = 0, underruns = 0
+        while t < 40 {
+            if t >= 10, t - 0.001 < 10 { jb.setLockFloor(ms: 150, now: t) }
+            while Double(sent) * 0.01 <= t { held.append(UInt64(sent * frame)); sent += 1 }
+            if t - lastRelease >= nextGap {
+                for p in held { jb.push(session: 1, samplePos: p, payload: Data([1]), now: t) }
+                held.removeAll(); lastRelease = t; nextGap = 0.1 + rng.nextDouble() * 0.01
+            }
+            pump: while ring < cb + frame {
+                switch jb.pull(playoutAhead: ring, now: t) {
+                case .wait: break pump
+                case .dropped: ring += frame; if t > 20 { drops += 1 }
+                case .duplicate: ring += frame; if t > 20 { dups += 1 }
+                default: ring += frame
+                }
+            }
+            if t >= nextRender {
+                if ring >= cb { ring -= cb } else {
+                    ring = 0
+                    if jb.stats.primed { jb.reportUnderrun(now: t) }
+                    if t > 20 { underruns += 1 }
+                }
+                nextRender += Double(cb) / 48000
+            }
+            t += 0.001
+        }
+        print("locked on clumped Wi-Fi, 20 s: drops \(drops) dups \(dups) underruns \(underruns), depth \(Int(jb.stats.depthMs)) target \(jb.stats.targetMs)")
+        #expect(drops + dups <= 4)
+        #expect(underruns == 0)
+    }
+
     /// Packets arrive in clumps every `period` + random(0..<spread) s, as from a phone in Wi-Fi
     /// power save; a 256-frame render callback. Counts after a 5 s warm-up.
     private func clumpRun(_ c: JitterBuffer.Config, period: Double, spread: Double) -> (target: Double, conceals: Int, underruns: Int) {

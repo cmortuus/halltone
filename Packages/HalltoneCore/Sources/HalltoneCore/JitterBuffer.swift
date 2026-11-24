@@ -38,6 +38,9 @@ public final class JitterBuffer {
         /// Drift correction kicks in when smoothed depth is this far from target.
         public var driftToleranceMs: Double = 15
         public var minAdjustInterval: TimeInterval = 1.0
+        /// How long after the screen locks the fast lock-floor growth may run (iOS pulls ahead
+        /// ~2.5 s in); after that, drift correction alone holds the floor.
+        public var lockGrowSeconds: TimeInterval = 5
         /// A jump in samplePos larger than this (either direction) flushes and re-primes.
         public var resetJumpSeconds: Double = 1.0
 
@@ -106,6 +109,7 @@ public final class JitterBuffer {
     private var gapPeakMs: Double = 0
     private var lastGapUpdate: TimeInterval = 0
     private var lastFastDrop: TimeInterval = 0
+    private var lockGrowUntil: TimeInterval = 0
 
     /// Largest recent gap between packet arrivals (decaying), in ms.
     public var recentGapMs: Double { gapPeakMs }
@@ -227,9 +231,11 @@ public final class JitterBuffer {
         }
         // Growing to a lock floor: about 2.5 s after the screen locks iOS pulls ~130 ms ahead
         // (it deepens its output buffer), so get there first, a crossfaded 10 ms repeat every
-        // 150 ms, judged on the instantaneous depth (the smoothed one lags).
-        if lockFloorMs > 0, depth < Double(targetSamples) - tol, now - lastAdjustTime >= 0.15,
-           queue[0].pos == expectedPos {
+        // 150 ms, judged on the instantaneous depth (the smoothed one lags). Only right after
+        // the lock: on clumped Wi-Fi the instantaneous depth dips below the floor between clumps
+        // all the time, and repeating at every dip while drift drops at every peak warbles.
+        if lockFloorMs > 0, now < lockGrowUntil, depth < Double(targetSamples) - tol,
+           now - lastAdjustTime >= 0.15, queue[0].pos == expectedPos {
             stats.driftDups += 1
             lastAdjustTime = now
             depthEMA += Double(frame)
@@ -376,6 +382,7 @@ public final class JitterBuffer {
     public func setLockFloor(ms: Double, now: TimeInterval) {
         guard ms != lockFloorMs else { return }
         lockFloorMs = ms
+        lockGrowUntil = ms > 0 ? now + config.lockGrowSeconds : 0
         if ms > 0 {
             setTarget(ms: stats.targetMs)
         } else {
