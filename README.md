@@ -276,6 +276,8 @@ Testing tips:
   auto-connect). `xcrun simctl io <udid> screenshot out.png` shows the status screen.
 - Device install: connect the iPhone (USB or paired over Wi‑Fi), select it in Xcode and run the
   HalltonePhone scheme, or `xcodebuild -scheme HalltonePhone -destination 'platform=iOS,name=<phone>'`.
+  `scripts/deploy-phone.sh [udid]` builds, installs and launches in one step; once the phone has
+  been paired over USB it works over Wi‑Fi with no cable (same network, phone unlocked to launch).
 
 ## License
 
