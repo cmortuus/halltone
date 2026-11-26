@@ -57,10 +57,11 @@ The Mac only captures audio while a subscriber is alive.
 
 | Path | What |
 |---|---|
-| `Packages/HalltoneCore` | SwiftPM package shared by both apps and the CLI: `HalltoneCore` (wire format, codecs, jitter buffer, ring), `HalltoneSender` (macOS capture + UDP listener), `HalltoneReceiver` (UDP subscriber, decode pump, AVAudioEngine playback), vendored libopus (`COpus`). |
+| `Packages/HalltoneCore` | SwiftPM package shared by both apps and the CLI: `HalltoneCore` (wire format, codecs, jitter buffer, ring), `HalltoneSenderCore` (the portable sender: UDP listener, pairing, subscribers, STATUS, RESEND, encode loop; macOS and Linux), `HalltoneSender` (macOS glue: process tap, Bonjour, resampling), `HalltoneReceiver` (UDP subscriber, decode pump, AVAudioEngine playback), vendored libopus (`COpus`). |
 | `Packages/HalltoneDialog` | Standalone SwiftPM package (no Apple frameworks; macOS + Linux): real-time **dialog detector** for 48 kHz stereo game audio (center extraction + vendored libfvad + level/band/modulation gates + hysteresis), and the `halltone-dialog-eval` tool. See its [README](Packages/HalltoneDialog/README.md). |
 | `HalltoneMac` | macOS menu bar app (SwiftUI `MenuBarExtra`). |
 | `HalltonePhone` | iOS app. |
+| `Linux/halltone-linux` | The Ubuntu sender (`halltone-linux`): PulseAudio/PipeWire capture + Avahi on top of `HalltoneSenderCore`, `install.sh`, systemd user unit. See [Linux (Ubuntu) sender](#linux-ubuntu-sender). |
 | `Tools/halltone-cli` | macOS test tool: capture to WAV, loopback sender/receiver, impairment simulation, latency report, acoustic end-to-end latency (`measure`). |
 | `project.yml` | XcodeGen spec → `xcodegen generate` → `Halltone.xcodeproj`. |
 
@@ -91,9 +92,10 @@ The iPhone app needs Xcode (`xcodebuild -scheme HalltonePhone -destination 'gene
 or Run from the IDE with the phone selected).
 
 **Linux (Ubuntu 24.04):** the portable core (`HalltoneCore`: wire format, codecs, jitter buffer,
-ring, vendored libopus) builds and tests with a Swift 6.x toolchain (e.g. the `swift:6.1-noble`
-image or [swiftly](https://www.swift.org/install/linux/)). `HalltoneSender` / `HalltoneReceiver`
-and the apps are Apple-only and are left out of the package on Linux:
+ring, vendored libopus) and `HalltoneSenderCore` (the portable sender) build and test with a Swift 6.x
+toolchain (e.g. the `swift:6.1-noble` image or [swiftly](https://www.swift.org/install/linux/)).
+`HalltoneSender` / `HalltoneReceiver` and the apps are Apple-only and are left out of the package on
+Linux; the Linux sender is its own package, see below:
 
 ```bash
 cd Packages/HalltoneCore && swift build && swift test
@@ -102,7 +104,7 @@ cd Packages/HalltoneCore && swift build && swift test
 `Packages/HalltoneDialog` (the dialog detector) is a separate package that builds and tests the same way on
 macOS and Linux; on Ubuntu install `espeak-ng` so its speech tests run instead of skipping.
 
-CI (`.github/workflows/ci.yml`) runs this on Ubuntu 24.04 plus `scripts/test-core.sh` on macOS.
+CI (`.github/workflows/ci.yml`) runs this on Ubuntu 24.04 plus `scripts/test-core.sh` on macOS, and builds and tests `halltone-linux` (including a run against a real PulseAudio server).
 
 ## Setup notes
 
@@ -124,6 +126,76 @@ CI (`.github/workflows/ci.yml`) runs this on Ubuntu 24.04 plus `scripts/test-cor
    stores it in the Keychain.
 6. Lock-screen play/pause/next/previous send CONTROL messages; the Mac relays them as media keys,
    which needs the **Accessibility** permission (prompted on first use).
+
+## Linux (Ubuntu) sender
+
+`halltone-linux` streams an Ubuntu PC's audio (a gaming rig, say) to the phone the same way the Mac
+does: the phone finds it with Bonjour, pairs with a 4-digit code and gets the same AUDIO, KEEPALIVE,
+RESEND and STATUS behavior. It defaults to **Game mode**: PCM in 2.5 ms frames.
+
+**Install** (Ubuntu 22.04 / 24.04, a Swift 6.x toolchain such as [swiftly](https://www.swift.org/install/linux/)):
+
+```bash
+git clone https://github.com/cmortuus/halltone && cd halltone
+Linux/install.sh
+```
+
+`install.sh` builds a release binary, installs it to `~/.local/bin/halltone-linux` and a systemd
+**user** unit `halltone.service` that runs it at login. It needs `libpulse-dev` and `pkg-config`
+(to build), `avahi-utils` (so the phone discovers the PC) and `pulseaudio-utils` (`pactl`, so capture
+follows a change of default output); it says which are missing and runs `sudo apt-get install` only
+if you answer yes (`--yes` skips the question, `--no-service` installs the binary only,
+`--uninstall` removes it). The first start prints a pairing code and saves it in the config:
+
+```bash
+journalctl --user -u halltone -n 20      # banner: name, pairing code, codec
+```
+
+On the iPhone, open Halltone: the PC appears by its hostname; enter the code once. If it doesn't
+appear (no `avahi-utils`, Avahi stopped, or mDNS blocked on the network) add it by IP with **+**.
+If `ufw` is enabled, allow the stream in: `sudo ufw allow 47800/udp` (and `5353/udp` for mDNS).
+
+**How it works.** Capture uses the PulseAudio simple API from `@DEFAULT_MONITOR@` (whatever the
+default output plays) at 48 kHz float32 stereo with 2.5 ms fragments. That works on PipeWire through
+`pipewire-pulse`, Ubuntu's default. The reader reconnects if the audio server restarts, and
+switches within about two seconds when the default sink changes. While nothing plays it sends paced
+silence, like the Mac. The service is advertised by running `avahi-publish-service` with the same
+TXT record as the Mac (`name`, `v`, `port`, plus `addr`, the wired interface's IPv4 so the phone
+doesn't pick a Docker or VPN address, and `ts`, the Tailscale address).
+
+**Config**: `~/.config/halltone/config.json` (created on first run); command-line flags override it.
+
+```json
+{ "name": "Gaming PC", "pairingCode": 4821, "codec": "pcm", "frameMs": 2.5, "port": 47800 }
+```
+
+| key / flag | meaning |
+| --- | --- |
+| `name` / `--name` | name the phone shows (default: hostname) |
+| `pairingCode` / `--code` | 1000-9999; generated on first run and printed |
+| `codec` / `--codec` | `pcm` (default, lowest latency) or `opus` (10 ms frames, less Wi-Fi bandwidth) |
+| `frameMs` / `--frame-ms` | PCM frame size, `2.5` (Game mode, default) or `5` |
+| `port` / `--port` | UDP port, default 47800 |
+| `advertise` / `--no-advertise` | publish over Avahi (default on) |
+| `pulseDevice` / `--device` | PulseAudio source to record, default `@DEFAULT_MONITOR@` |
+| `--source tone` | built-in 440 Hz test tone instead of PulseAudio (no audio server needed) |
+
+`halltone-linux --help` lists everything. Restart after editing the config:
+`systemctl --user restart halltone`.
+
+**Differences from the Mac sender.** No media keys: STATUS reports `controlsAvailable` false and
+CONTROL media keys from the lock screen are ignored. REMOTE_CONTROL (pause the PC from another
+paired device) answers `disabled`, and there are no headphone holds or "user at the PC" flags:
+those stay Mac-side features of the same sender core.
+
+**Latency.** On PipeWire the 2.5 ms fragment is a request: the graph's quantum (default 1024 frames,
+21 ms) is lowered to the smallest any client asks for, which this stream does while it runs. If the
+phone's buffer readout stays high, try a fixed small quantum
+(`pw-metadata -n settings 0 clock.force-quantum 128`; `0` undoes it).
+
+**Developing without a PC.** `halltone-linux` builds on macOS too, minus the PulseAudio source
+(`--source tone`): `cd Linux/halltone-linux && swift test`. The tests include the real executable
+with a tone source and a small UDP receiver that subscribes, decodes and checks the audio.
 
 ## Wire protocol (v1)
 
