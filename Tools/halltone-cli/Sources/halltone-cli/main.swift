@@ -15,6 +15,11 @@ halltone-cli — Halltone test tool
   receive HOST[:PORT] [--code N] [--name X] [--wav out.wav] [--seconds N]
        [--latency-log recv.csv]            subscribe; play (default) or write decoded audio to a WAV
   latency send.csv recv.csv                report loopback latency from the two logs
+  measure [--clicks 20] [--interval 500] [--input NAME] [--wav rec.wav] [--level 0.5]
+       [--threshold 0.3] [--input-offset-ms 0]
+                                           real end-to-end latency: play clicks on the Mac, record the phone
+                                           with a Mac mic, cross-correlate (--list-devices lists inputs)
+  measure --loopback [--wav rec.wav]       self-test with a synthetic delay line (no hardware)
 """
 
 var args = Array(CommandLine.arguments.dropFirst())
@@ -80,6 +85,22 @@ do {
     case "latency":
         guard args.count == 2 else { print(usage); exit(2) }
         try reportLatency(send: URL(fileURLWithPath: args[0]), receive: URL(fileURLWithPath: args[1]))
+    case "measure":
+        if flag("--list-devices") {
+            for d in listInputDevices() { print("\(d.name)  (\(Int(d.rate)) Hz, \(d.channels) ch\(d.isBuiltIn ? ", built-in" : ""))") }
+            break
+        }
+        let wav = option("--wav").map { URL(fileURLWithPath: $0) }
+        if flag("--loopback") { exit(runMeasureLoopback(wav: wav) ? 0 : 1) }
+        var o = MeasureOptions()
+        o.wav = wav
+        o.plan.clicks = Int(option("--clicks", default: "20")!) ?? 20
+        o.plan.interval = (Double(option("--interval", default: "500")!) ?? 500) / 1000
+        o.plan.level = Float(option("--level", default: "0.5")!) ?? 0.5
+        o.inputName = option("--input")
+        o.threshold = Float(option("--threshold", default: "0.3")!) ?? 0.3
+        o.inputOffsetMs = Double(option("--input-offset-ms", default: "0")!) ?? 0
+        try runMeasure(o)
     default:
         print(usage); exit(2)
     }

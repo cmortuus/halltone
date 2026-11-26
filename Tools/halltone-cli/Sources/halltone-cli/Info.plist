@@ -10,6 +10,8 @@
 	<string>1</string>
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>Halltone captures system audio to stream it to your iPhone.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>halltone-cli measure records a Mac microphone to time clicks played through Halltone.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Halltone streams audio to devices on your local network.</string>
 	<key>NSBonjourServices</key>

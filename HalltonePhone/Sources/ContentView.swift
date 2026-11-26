@@ -102,6 +102,9 @@ struct ContentView: View {
                 Section {
                     Toggle("Auto-connect on launch", isOn: $model.autoConnect)
                 }
+                #if DEBUG
+                DebugSettingsSection()
+                #endif
                 Section("About") {
                     LabeledContent("Version", value: AppLinks.version)
                     Link("Help & Mac app", destination: AppLinks.home)
