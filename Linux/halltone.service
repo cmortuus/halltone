@@ -1,0 +1,14 @@
+[Unit]
+Description=Halltone: stream this PC's audio to your iPhone
+Documentation=https://github.com/cmortuus/halltone
+# Optional ordering: the audio server may or may not be socket-activated. If it isn't up yet,
+# halltone-linux keeps retrying until it is.
+After=pipewire-pulse.service pulseaudio.service
+
+[Service]
+ExecStart=%h/.local/bin/halltone-linux
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

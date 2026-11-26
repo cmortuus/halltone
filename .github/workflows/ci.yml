@@ -53,3 +53,41 @@ jobs:
       - name: Test
         working-directory: Packages/HalltoneDialog
         run: swift test
+
+  # halltone-linux: the Ubuntu sender (portable SenderCore + PulseAudio capture + Avahi). Builds
+  # against libpulse, runs the unit tests and the integration test (the real executable with a
+  # synthetic tone source and a UDP receiver that subscribes and decodes), then a second pass
+  # against a real PulseAudio server with a null sink to exercise capture and sink switching.
+  linux-sender:
+    name: Linux (Ubuntu 24.04) - halltone-linux build + test
+    runs-on: ubuntu-24.04
+    container: swift:6.1-noble
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libpulse-dev, avahi-utils, a PulseAudio server for the capture test
+        run: apt-get update && apt-get install -y --no-install-recommends pkg-config libpulse-dev avahi-utils pulseaudio pulseaudio-utils
+      - name: Build (debug)
+        working-directory: Linux/halltone-linux
+        run: swift build
+      - name: Build (release, as install.sh does)
+        working-directory: Linux/halltone-linux
+        run: swift build -c release && .build/release/halltone-linux --version
+      - name: Test (unit + integration with the tone source)
+        working-directory: Linux/halltone-linux
+        run: swift test
+      - name: Start PulseAudio with a null sink
+        run: |
+          useradd -m -s /bin/bash ci
+          mkdir -p /tmp/pulse-ci && chown ci /tmp/pulse-ci
+          su ci -c "XDG_RUNTIME_DIR=/tmp/pulse-ci pulseaudio -n --daemonize=yes --exit-idle-time=-1 --log-target=file:/tmp/pulse-ci/log -L 'module-null-sink sink_name=ci' -L 'module-native-protocol-unix auth-anonymous=1 socket=/tmp/pulse-ci/native'"
+          sleep 2
+          PULSE_SERVER=unix:/tmp/pulse-ci/native pactl info
+      - name: Test (PulseAudio capture and default-sink switching)
+        working-directory: Linux/halltone-linux
+        env:
+          HALLTONE_PULSE_TEST: "1"
+          PULSE_SERVER: unix:/tmp/pulse-ci/native
+        run: swift test --filter PulseTests
+      - name: PulseAudio log (on failure)
+        if: failure()
+        run: cat /tmp/pulse-ci/log || true
