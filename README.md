@@ -7,7 +7,7 @@ Mac, put the phone in your pocket, and keep listening on your AirPods (or any he
 phone) anywhere your Wi‑Fi reaches. Bluetooth drops out a few rooms from the Mac; the phone in
 your pocket doesn't.
 
-- About 100 ms of latency on a good network, plus your headphones' own delay
+- About 100 ms of latency on a good network (Game mode: 40–55 ms), plus your headphones' own delay
 - Reconnects by itself after Wi‑Fi dead spots, keeps playing with the screen locked
 - Opus or uncompressed audio; play/pause and skip on the Mac from the lock screen
 - Local network only: no accounts, no cloud, no data collection ([privacy policy](PRIVACY.md))
@@ -128,7 +128,8 @@ type, seq (u32), session (u32). Types:
 | AUDIO 0x10 | Mac → phone | `samplePos u64, codec u8, len u16, payload` |
 | CONTROL 0x20 | both | play/pause, next, previous, hold headphones on/off, pause, play, listening, not listening |
 
-Codecs: 1 = PCM16 interleaved stereo (240-sample / 5 ms frames, ~1.5 Mbps); 2 = Opus 48 kHz stereo
+Codecs: 1 = PCM16 interleaved stereo (240-sample / 5 ms frames, ~1.5 Mbps; Game mode on the Mac
+sends 120-sample / 2.5 ms frames, ~1.6 Mbps, and says so in `SUBSCRIBE_ACK.frameSamples`); 2 = Opus 48 kHz stereo
 (480-sample / 10 ms frames, 128 kbps VBR, restricted-low-delay, in-band FEC flag on).
 
 The Mac replies from whichever of its addresses the phone sent to (`IPV6_PKTINFO` in,
@@ -147,6 +148,21 @@ Mac answers `OK` or `NO <reason>`.
   40 ms start, 20–250 ms, no gap concealment (it sounded worse than waiting). Stable: 300 ms
   start, 250–1500 ms. Cellular: 400 ms start, 300–2000 ms. Mode changes retune the depth with
   crossfaded drops/repeats instead of flushing.
+- **Game mode** (phone on the desk next to the computer, app in front, screen on): pick **Game**
+  on the phone and turn on **Game mode (lowest latency)** in the Mac menu (PCM in 2.5 ms frames,
+  the tap's smallest IO buffer). 15 ms start, 8–60 ms, gaps covered up to 60 ms, 5 ms margin,
+  target decays within a few seconds (5 ms every 2 s). Anything longer than the ceiling (Wi‑Fi
+  power save, ~100 ms) isn't waited for or added to the target: up to 120 ms of it is concealed
+  with a short fade out and fade in, then playback carries on at the same depth, so rare short
+  fades replace a bigger buffer. Packets that arrive "late" because of that don't raise the
+  target. The decode pump keeps one render callback plus a frame decoded ahead (about 5 ms
+  instead of 20), growing the slack by a frame per render underrun (up to 40 ms, shrinking again
+  after 3 s without one). The phone asks iOS for a 2.5 ms IO buffer (128 frames; the granted
+  value is in the diagnostics log) and keeps the screen on while Game mode is playing in the
+  foreground: locking it makes iOS deepen its output buffer by 100+ ms. Bluetooth headphones add
+  150–250 ms of their own; the Output row of the status screen shows what iOS reports. The Mac
+  and phone settings are independent: Game on the phone with a normal Mac still works (just
+  5–10 ms frames), and a Game Mac with another phone mode just sends 2.5 ms frames.
 - **Jitter buffer** slotted by `samplePos`: handles reorder and duplicates. The target follows the
   recent peak arrival gap plus a margin. Underruns raise it only when the queue was actually
   empty, and gaps longer than the ceiling are ignored, so a single blackout can't ratchet it up.

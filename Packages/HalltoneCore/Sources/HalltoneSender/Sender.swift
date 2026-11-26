@@ -13,6 +13,9 @@ public final class Sender {
     public struct Config {
         public var port: UInt16 = Constants.defaultPort
         public var codec: CodecID = .pcm16
+        /// Game mode: PCM16 in 2.5 ms frames (overrides `codec`). The Mac app also asks the tap
+        /// for its smallest IO buffer.
+        public var gameMode = false
         /// nil accepts any pairing code.
         public var pairingCode: UInt32?
         public var advertise = true
@@ -25,6 +28,13 @@ public final class Sender {
         public var simulatedBurstMs: Double = 0
         public var simulatedBurstEveryMs: Double = 2000
         public init() {}
+
+        /// The codec actually sent: Game mode is always PCM16.
+        public var effectiveCodec: CodecID { gameMode ? .pcm16 : codec }
+        /// Samples per frame (and per packet) for `effectiveCodec`.
+        public var frameSamples: Int {
+            gameMode ? Constants.pcmGameFrameSamples : CodecFactory.frameSamples(for: codec)
+        }
     }
 
     /// Test hook: (samplePos, uptime ns) for every packet whose samplePos is a multiple of 4800.
@@ -228,8 +238,8 @@ public final class Sender {
                 sendControl(.subscribeNak(reason: NakReason.badPairingCode.rawValue), to: address)
                 return
             }
-            let frame = CodecFactory.frameSamples(for: config.codec)
-            let ack = Message.subscribeAck(codec: config.codec, sampleRate: UInt32(Constants.sampleRate),
+            let frame = config.frameSamples
+            let ack = Message.subscribeAck(codec: config.effectiveCodec, sampleRate: UInt32(Constants.sampleRate),
                                            channels: UInt8(Constants.channels), frameSamples: UInt16(frame),
                                            macName: config.macName)
             lock.lock()
@@ -552,9 +562,9 @@ public final class Sender {
     /// straight into a preallocated datagram and sends it to every subscriber with sendto().
     private func encodeLoop() {
         let encoder: AudioEncoder
-        switch config.codec {
+        switch config.effectiveCodec {
         case .pcm16:
-            encoder = PCM16Encoder()
+            encoder = PCM16Encoder(frameSamples: config.gameMode ? Constants.pcmGameFrameSamples : Constants.pcmFrameSamples)
         case .opus:
             do { encoder = try OpusEncoder() } catch {
                 log.error("opus encoder unavailable (\(error)); falling back to PCM16")
@@ -653,7 +663,9 @@ public final class Sender {
                         silenceSent += 1
                     }
                 }
-                _ = wake.wait(timeout: .now() + .milliseconds(10))
+                // Idle wake-ups must be shorter than a Game-mode frame, or paced silence goes out
+                // in 10 ms bursts.
+                _ = wake.wait(timeout: .now() + .milliseconds(frame < 240 ? 2 : 10))
             }
         }
     }

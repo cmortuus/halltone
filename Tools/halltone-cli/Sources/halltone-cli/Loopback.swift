@@ -8,10 +8,12 @@ import HalltoneReceiver
 // MARK: - send
 
 func runSend(port: UInt16, sourceKind: String, codec: CodecID, mute: Bool, pairingCode: UInt32?, advertise: Bool,
-             seconds: Double?, simLoss: Double, simJitterMs: Double, latencyLog: URL?, swapEvery: Double? = nil, burstMs: Double = 0, burstEveryMs: Double = 2000) throws {
+             seconds: Double?, simLoss: Double, simJitterMs: Double, latencyLog: URL?, swapEvery: Double? = nil, burstMs: Double = 0, burstEveryMs: Double = 2000,
+             game: Bool = false) throws {
     var cfg = Sender.Config()
     cfg.port = port
     cfg.codec = codec
+    cfg.gameMode = game
     cfg.pairingCode = pairingCode
     cfg.advertise = advertise
     cfg.simulatedLoss = simLoss
@@ -20,8 +22,10 @@ func runSend(port: UInt16, sourceKind: String, codec: CodecID, mute: Bool, pairi
     cfg.simulatedBurstEveryMs = burstEveryMs
     let latencyWriter = try latencyLog.map { try CSVWriter(url: $0) }
     let sender = Sender(config: cfg) {
-        if sourceKind == "tone" { return ToneSource() }
-        return ProcessTapSource(muteWhileTapped: mute, excludedProcesses: [getpid()])
+        // Game mode: a tone block the size of the tap's smallest IO buffer; the real tap asks for it.
+        if sourceKind == "tone" { return ToneSource(blockFrames: game ? 128 : 480) }
+        return ProcessTapSource(muteWhileTapped: mute, excludedProcesses: [getpid()],
+                                ioBufferFrames: game ? ProcessTapSource.smallestIOBuffer : ProcessTapSource.defaultIOBufferFrames)
     }
     var lastLine = ""
     sender.onStats = { s in
@@ -41,7 +45,7 @@ func runSend(port: UInt16, sourceKind: String, codec: CodecID, mute: Bool, pairi
         }
     }
     defer { swapTimer?.invalidate() }
-    print("sending on udp/\(port) source=\(sourceKind) codec=\(codec) pairing=\(pairingCode.map(String.init) ?? "none") sim-loss=\(simLoss) sim-jitter=\(simJitterMs)ms")
+    print("sending on udp/\(port) source=\(sourceKind) codec=\(cfg.effectiveCodec) frame=\(cfg.frameSamples)\(game ? " (game mode)" : "") pairing=\(pairingCode.map(String.init) ?? "none") sim-loss=\(simLoss) sim-jitter=\(simJitterMs)ms")
     if let seconds {
         RunLoop.main.run(until: Date().addingTimeInterval(seconds))
     } else {
@@ -54,7 +58,8 @@ func runSend(port: UInt16, sourceKind: String, codec: CodecID, mute: Bool, pairi
 
 // MARK: - receive
 
-func runReceive(target: String, pairingCode: UInt32, name: String, wav: URL?, seconds: Double?, latencyLog: URL?) throws {
+func runReceive(target: String, pairingCode: UInt32, name: String, wav: URL?, seconds: Double?, latencyLog: URL?,
+                mode: LatencyMode = .auto) throws {
     let latencyWriter = try latencyLog.map { try CSVWriter(url: $0) }
     let endpoint: NWEndpoint
     if let colon = target.lastIndex(of: ":"), let port = UInt16(target[target.index(after: colon)...]) {
@@ -64,10 +69,11 @@ func runReceive(target: String, pairingCode: UInt32, name: String, wav: URL?, se
     }
     let sink: PlaybackSink = try wav.map { try WavSink(url: $0) } ?? PlaybackEngine()
     let receiver = Receiver(sink: sink)
+    receiver.latencyMode = mode
     receiver.onState = { st in print("[recv] state: \(st)"); fflush(stdout) }
     receiver.onStats = { s in
         guard s.state.isActive else { return }
-        print("[recv] cb \(s.callbackFrames) \(s.packetsPerSecond) pkt/s \(s.kilobitsPerSecond) kbps buffer \(s.bufferMs)/\(s.targetMs) ms loss \(s.lossPercent)% concealed \(s.concealed) underruns \(s.underruns) est. latency \(s.estimatedLatencyMs) ms resend asked \(s.resendRequested) recovered \(s.resendRecovered) late \(s.lateFrames)")
+        print("[recv] cb \(s.callbackFrames) \(s.packetsPerSecond) pkt/s \(s.kilobitsPerSecond) kbps buffer \(s.bufferMs)/\(s.targetMs) ms loss \(s.lossPercent)% concealed \(s.concealed) underruns \(s.underruns) est. latency \(s.estimatedLatencyMs) ms frame \(s.frameMs) ms queued \(s.queuedMs) handoff \(s.handoffMs) resend asked \(s.resendRequested) recovered \(s.resendRecovered) late \(s.lateFrames)")
         fflush(stdout)
     }
     receiver.onFrameScheduled = { pos, ns in latencyWriter?.write(pos, ns) }

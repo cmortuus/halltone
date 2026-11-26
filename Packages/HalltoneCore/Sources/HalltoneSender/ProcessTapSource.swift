@@ -61,7 +61,15 @@ public final class ProcessTapSource: AudioSource {
     /// kAudioAggregateDeviceTapAutoStartKey.
     public let autoStart: Bool
 
-    public init(muteWhileTapped: Bool = false, excludedProcesses: [pid_t] = [], tapOnly: Bool = true, autoStart: Bool = true) {
+    /// IO buffer to ask the aggregate for, in frames; clamped to what the device allows.
+    /// `smallestIOBuffer` (Game mode) asks for the minimum.
+    public let ioBufferFrames: UInt32
+    public static let defaultIOBufferFrames: UInt32 = 128
+    public static let smallestIOBuffer: UInt32 = 1
+
+    public init(muteWhileTapped: Bool = false, excludedProcesses: [pid_t] = [], tapOnly: Bool = true, autoStart: Bool = true,
+                ioBufferFrames: UInt32 = ProcessTapSource.defaultIOBufferFrames) {
+        self.ioBufferFrames = ioBufferFrames
         self.muteWhileTapped = muteWhileTapped
         self.excludedProcesses = excludedProcesses
         self.tapOnly = tapOnly
@@ -133,7 +141,7 @@ public final class ProcessTapSource: AudioSource {
         guard err == noErr, agg != kAudioObjectUnknown else { teardown(); throw Failure.createAggregate(err) }
         aggregateID = agg
         log.notice("aggregate created after \(ms()) ms (tapOnly=\(self.tapOnly))")
-        Self.setSmallIOBuffer(aggregateID)
+        Self.setSmallIOBuffer(aggregateID, frames: ioBufferFrames)
 
         // 4. Scratch for de-interleaving (only used if the tap is non-interleaved).
         if !interleaved {
@@ -242,7 +250,7 @@ public final class ProcessTapSource: AudioSource {
     // MARK: Core Audio helpers
 
     /// Asks for 128-frame IO (2.7 ms) instead of the default 512 (10.7 ms): audio reaches the
-    /// encoder sooner. Clamped to what the device allows.
+    /// encoder sooner. Clamped to what the device allows (Game mode asks for the minimum).
     private static func setSmallIOBuffer(_ device: AudioObjectID, frames wanted: UInt32 = 128) {
         var rangeAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyBufferFrameSizeRange,
                                                    mScope: kAudioObjectPropertyScopeGlobal,
@@ -257,7 +265,10 @@ public final class ProcessTapSource: AudioSource {
                                               mScope: kAudioObjectPropertyScopeGlobal,
                                               mElement: kAudioObjectPropertyElementMain)
         let err = AudioObjectSetPropertyData(device, &addr, 0, nil, UInt32(MemoryLayout<UInt32>.size), &frames)
-        log.notice("IO buffer \(frames) frames (status \(err))")
+        var granted: UInt32 = 0
+        var gsize = UInt32(MemoryLayout<UInt32>.size)
+        _ = AudioObjectGetPropertyData(device, &addr, 0, nil, &gsize, &granted)
+        log.notice("IO buffer asked \(frames) frames (device range \(range.mMinimum, privacy: .public)-\(range.mMaximum, privacy: .public)), now \(granted) (status \(err))")
     }
 
     private static func getProperty<T>(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector,

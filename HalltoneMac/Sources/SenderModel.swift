@@ -13,6 +13,7 @@ final class SenderModel: ObservableObject {
     private enum Key {
         static let mute = "muteWhileStreaming"
         static let codec = "codec"
+        static let gameMode = "gameMode"
         static let port = "port"
         static let pairingCode = "pairingCode"
     }
@@ -46,6 +47,11 @@ final class SenderModel: ObservableObject {
     @Published var codec: CodecID {
         didSet { defaults.set(Int(codec.rawValue), forKey: Key.codec); restart() }
     }
+    /// Game mode: PCM in 2.5 ms frames and the tap's smallest IO buffer, for a phone on the desk
+    /// next to this Mac (the codec setting is ignored while it's on).
+    @Published var gameMode: Bool {
+        didSet { defaults.set(gameMode, forKey: Key.gameMode); restart() }
+    }
     @Published var launchAtLogin: Bool {
         didSet { setLaunchAtLogin(launchAtLogin) }
     }
@@ -64,6 +70,7 @@ final class SenderModel: ObservableObject {
         // is audible again as soon as no phone is connected.
         muteWhileStreaming = defaults.object(forKey: Key.mute) as? Bool ?? true
         codec = CodecID(rawValue: UInt8(defaults.integer(forKey: Key.codec))) ?? .opus
+        gameMode = defaults.bool(forKey: Key.gameMode)
         port = UInt16(defaults.integer(forKey: Key.port)) == 0 ? Constants.defaultPort : UInt16(defaults.integer(forKey: Key.port))
         launchAtLogin = SMAppService.mainApp.status == .enabled
         let stored = UInt32(defaults.integer(forKey: Key.pairingCode))
@@ -80,11 +87,13 @@ final class SenderModel: ObservableObject {
         var cfg = Sender.Config()
         cfg.port = port
         cfg.codec = codec
+        cfg.gameMode = gameMode
         cfg.pairingCode = pairingCode
         cfg.macName = macName
         let mute = muteWhileStreaming
+        let ioFrames = gameMode ? ProcessTapSource.smallestIOBuffer : ProcessTapSource.defaultIOBufferFrames
         let s = Sender(config: cfg) {
-            ProcessTapSource(muteWhileTapped: mute, excludedProcesses: [getpid()])
+            ProcessTapSource(muteWhileTapped: mute, excludedProcesses: [getpid()], ioBufferFrames: ioFrames)
         }
         s.onStats = { [weak self] st in
             DispatchQueue.main.async {

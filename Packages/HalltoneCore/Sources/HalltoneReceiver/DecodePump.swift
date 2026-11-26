@@ -15,11 +15,14 @@ final class DecodePump {
     private var thread: Thread?
     private var running = false
     private let frame: Int
-    /// Minimum decoded-ahead depth regardless of the output's callback size (~20 ms).
-    private let baseLowWater: Int
     /// Extra decoded-ahead slack, grown when the render side runs dry while packets are queued
-    /// (this thread was late, e.g. throttled with the screen locked). Capped at 100 ms.
+    /// (this thread was late, e.g. throttled with the screen locked). Capped by the jitter
+    /// config (100 ms; 40 ms in Game mode).
     private var extraLowWater = 0
+    /// The last frame out was concealed: a PCM frame that follows is faded in from it.
+    private var afterConceal = false
+    private var lastUnderrunSeen: TimeInterval = 0
+    private var lastExtraDecay: TimeInterval = 0
     /// Result of the last audio-workgroup join (0 = joined), for diagnostics.
     let workgroupStatus = AtomicUInt64(UInt64(bitPattern: -99))
     private var out: [Float]
@@ -36,9 +39,6 @@ final class DecodePump {
         self.decoder = decoder
         self.sink = sink
         frame = decoder.frameSamples
-        // Keep ~20 ms (at least 2 frames) decoded ahead, or one full render callback plus a
-        // frame when the output asks for bigger chunks (Bluetooth).
-        baseLowWater = max(2 * frame, 960)
         let n = frame * Constants.channels
         out = [Float](repeating: 0, count: n)
         tmp = [Float](repeating: 0, count: n)
@@ -50,6 +50,7 @@ final class DecodePump {
         guard !running else { return }
         running = true
         extraLowWater = 0
+        lastUnderrunSeen = now()
         _ = sink.underruns.exchange(0)
         let t = Thread { [self] in loop() }
         t.qualityOfService = .userInteractive
@@ -113,6 +114,13 @@ final class DecodePump {
 
     private func now() -> TimeInterval { ProcessInfo.processInfo.systemUptime }
 
+    /// Minimum decoded-ahead depth regardless of the output's callback size: ~20 ms (at least 2
+    /// frames) normally; in Game mode (`minDecodedAheadMs` 0) just the one callback plus a frame
+    /// that the caller adds.
+    private func baseLowWater(_ c: JitterBuffer.Config) -> Int {
+        c.minDecodedAheadMs > 0 ? max(2 * frame, Int(c.minDecodedAheadMs * c.sampleRate / 1000)) : 0
+    }
+
     private func loop() {
         let ch = Constants.channels
         let n = frame * ch
@@ -138,16 +146,23 @@ final class DecodePump {
             let under = sink.underruns.exchange(0)
             if under > 0, jitter.stats.primed {
                 if jitter.queuedSamples >= 2 * frame {
-                    extraLowWater = min(extraLowWater + frame, Int(Constants.sampleRate / 10))
+                    let cap = Int(jitter.config.maxExtraDecodedAheadMs * Constants.sampleRate / 1000)
+                    extraLowWater = min(extraLowWater + frame, cap)
                 }
                 jitter.reportUnderrun(now: t)
             }
+            if under > 0 { lastUnderrunSeen = t }
+            let decayAfter = jitter.config.extraDecodedAheadDecaySeconds
+            if decayAfter > 0, extraLowWater > 0, t - lastUnderrunSeen >= decayAfter, t - lastExtraDecay >= decayAfter {
+                extraLowWater = max(0, extraLowWater - frame)
+                lastExtraDecay = t
+            }
             var wrote = false
             let callback = Int(sink.maxCallbackFrames.load())
-            let lowWaterSamples = max(baseLowWater, callback + frame) + extraLowWater
+            let lowWaterSamples = max(baseLowWater(jitter.config), callback + frame) + extraLowWater
             while running, sink.ring.availableToRead < lowWaterSamples * ch {
                 let ahead = sink.ring.availableToRead / ch
-                let pull = jitter.pull(playoutAhead: ahead, now: t)
+                let pull = jitter.pull(playoutAhead: ahead, now: t, concealBelow: max(callback, frame))
                 if case .wait = pull { break }
                 produce(pull)
                 if let hook = onFrameScheduled, let pos = pull.samplePos, pos % 4800 == 0 {
@@ -182,18 +197,25 @@ final class DecodePump {
             break
         case .frame(let pos, let payload):
             decodeInto(&out, payload, pos: pos)
+            // Game mode conceals whole gaps: the PCM stream then restarts abruptly, so fade it in
+            // from where the concealment left off (Opus's own PLC already blends into the next frame).
+            if afterConceal, jitter.config.concealGaps, decoder.codec == .pcm16 { crossfade(from: lastOut, to: &out) }
+            afterConceal = false
         case .conceal(_, let next):
+            afterConceal = true
             var ok = false
             if let next {
                 ok = next.withUnsafeBytes { raw in out.withUnsafeMutableBufferPointer { decoder.decodeFEC(nextPayload: raw, into: $0.baseAddress!) } }
             }
             if !ok { out.withUnsafeMutableBufferPointer { decoder.conceal(into: $0.baseAddress!) } }
         case .dropped(let pos, let dropped, let nextPos, let next):
+            afterConceal = false
             // Time-compress two frames into one with a linear crossfade.
             decodeInto(&tmp, dropped, pos: pos)
             decodeInto(&out, next, pos: nextPos)
             crossfade(from: tmp, to: &out)
         case .duplicate(let nextPos, let next):
+            afterConceal = false
             // Stretch: emit a bridge from the last output into the upcoming frame, keep it queued.
             decodeInto(&cached, next, pos: nextPos)
             cachedPos = nextPos
