@@ -15,6 +15,8 @@ final class MacProximity: NSObject, CBCentralManagerDelegate, CBPeripheralDelega
     /// true near, false away, nil unknown (no Bluetooth, no permission, no beacon found yet).
     private(set) var near: Bool? { didSet { if near != oldValue { onChange?(near) } } }
     var onChange: ((Bool?) -> Void)?
+    /// Starts each diagnostics line: the Mac's name once several sources are in play.
+    var prefix: () -> String = { "" }
     /// Set while the Mac sees keyboard/mouse input right now: feeds the "at the desk" baseline.
     var calibrating = false
     /// Smoothed signal strength (dBm), for diagnostics.
@@ -73,7 +75,7 @@ final class MacProximity: NSObject, CBCentralManagerDelegate, CBPeripheralDelega
         case .poweredOn:
             scan()
         default:
-            diag("proximity: Bluetooth state \(central.state.rawValue); falling back to Mac activity")
+            diag(prefix() + "proximity: Bluetooth state \(central.state.rawValue); falling back to Mac activity")
             near = nil
         }
     }
@@ -110,14 +112,14 @@ final class MacProximity: NSObject, CBCentralManagerDelegate, CBPeripheralDelega
         // The link also drops every minute or so at the desk and reconnects within seconds, so
         // only a link that stays down means out of range. A pending connect has no timeout: it
         // reconnects (and readings resume) when the phone comes back.
-        diag("proximity: beacon link dropped (\(error?.localizedDescription ?? "no error"))")
+        diag(prefix() + "proximity: beacon link dropped (\(error?.localizedDescription ?? "no error"))")
         rssi = nil
         recent = []
         nearRun = 0; farRun = 0
         lostTimer?.invalidate()
         lostTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: false) { [weak self] _ in
             guard let self, self.peripheral?.state != .connected, self.near != false else { return }
-            diag("proximity: Mac beacon out of range; away")
+            diag(prefix() + "proximity: Mac beacon out of range; away")
             self.near = false
         }
         central.connect(p)
@@ -140,7 +142,7 @@ final class MacProximity: NSObject, CBCentralManagerDelegate, CBPeripheralDelega
         let name = c.value.map { String(decoding: $0, as: UTF8.self) }
         guard name == macName else { return reject(p) }
         matched = true
-        diag("proximity: found \(name ?? "?")'s beacon")
+        diag(prefix() + "proximity: found \(name ?? "?")'s beacon")
         startReading()
     }
 
@@ -162,8 +164,8 @@ final class MacProximity: NSObject, CBCentralManagerDelegate, CBPeripheralDelega
         else if smoothed < farThreshold { farRun += 1; nearRun = 0 }
         else { nearRun = 0; farRun = 0 }
         // Three medians (~6 s) in a row before switching, so a brief dip doesn't flip it.
-        if nearRun >= 3, near != true { near = true; diag("proximity: near the Mac (\(Int(smoothed)) dBm)") }
-        if farRun >= 3, near != false { near = false; diag("proximity: away from the Mac (\(Int(smoothed)) dBm)") }
+        if nearRun >= 3, near != true { near = true; diag(prefix() + "proximity: near the Mac (\(Int(smoothed)) dBm)") }
+        if farRun >= 3, near != false { near = false; diag(prefix() + "proximity: away from the Mac (\(Int(smoothed)) dBm)") }
     }
 
     private func reject(_ p: CBPeripheral) {

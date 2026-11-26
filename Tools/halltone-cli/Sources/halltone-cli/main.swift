@@ -7,12 +7,17 @@ halltone-cli — Halltone test tool
   capture --seconds N [--mute] [--with-output-device] [--no-autostart] out.wav
                                            capture system audio with the process tap
   tone --seconds N --freq HZ out.wav       write a test sine (16-bit stereo 48k)
-  analyze in.wav                           print RMS/peak and dominant frequency
+  analyze in.wav [--tones F,F,...]         print RMS/peak and dominant frequency; --tones: level of each given
+                                           frequency (checks that every mixed tone is present)
   send [--port 47800] [--source tap|tone] [--codec pcm|opus] [--mute] [--code N]
        [--no-bonjour] [--seconds N] [--sim-loss 0.05] [--sim-jitter 40]
        [--latency-log send.csv] [--swap-every N] [--sim-burst MS [--sim-burst-every MS]]
-       [--game]                            run the sender (capture on demand); --game: Game mode (PCM,
+       [--freq HZ] [--game]                run the sender (capture on demand); --game: Game mode (PCM,
                                            2.5 ms frames, 64-frame tap IO buffer)
+  receive --multi HOST[:PORT] HOST[:PORT]... [--code N | --codes N,N,...] [--volumes V,V,...] [--mute-last]
+       [--name X] [--wav out.wav] [--seconds N] [--mode ...]
+                                           listen to several senders at once and mix them (the phone's multi-source
+                                           path); --volumes are 0...1 per source
   receive HOST[:PORT] [--code N] [--name X] [--wav out.wav] [--seconds N]
        [--mode auto|lowest|balanced|stable|game] [--latency-log recv.csv]            subscribe; play (default) or write decoded audio to a WAV
   latency send.csv recv.csv                report loopback latency from the two logs
@@ -60,8 +65,9 @@ do {
         guard let out = args.first else { print(usage); exit(2) }
         try writeTone(seconds: seconds, frequency: freq, output: URL(fileURLWithPath: out))
     case "analyze":
+        let tones = option("--tones").map { $0.split(separator: ",").compactMap { Double($0) } } ?? []
         guard let path = args.first else { print(usage); exit(2) }
-        try analyze(URL(fileURLWithPath: path))
+        try analyze(URL(fileURLWithPath: path), tones: tones)
     case "send":
         let port = UInt16(option("--port", default: "47800")!) ?? 47800
         let source = option("--source", default: "tap")!
@@ -77,9 +83,22 @@ do {
         let burst = Double(option("--sim-burst", default: "0")!) ?? 0
         let burstEvery = Double(option("--sim-burst-every", default: "2000")!) ?? 2000
         let game = flag("--game")
+        let toneFreq = Double(option("--freq", default: "440")!) ?? 440
         try runSend(port: port, sourceKind: source, codec: codec, mute: mute, pairingCode: code, advertise: !noBonjour,
                     seconds: seconds, simLoss: simLoss, simJitterMs: simJitter, latencyLog: latencyLog, swapEvery: swapEvery,
-                    burstMs: burst, burstEveryMs: burstEvery, game: game)
+                    burstMs: burst, burstEveryMs: burstEvery, game: game, toneFreq: toneFreq)
+    case "receive" where args.contains("--multi"):
+        _ = flag("--multi")
+        let codes = (option("--codes") ?? option("--code") ?? "0").split(separator: ",").compactMap { UInt32($0) }
+        let volumes = (option("--volumes") ?? "").split(separator: ",").compactMap { Float($0) }
+        let muteLast = flag("--mute-last")
+        let name = option("--name", default: "halltone-cli")!
+        let wav = option("--wav").map { URL(fileURLWithPath: $0) }
+        let seconds = option("--seconds").flatMap { Double($0) }
+        let mode = option("--mode").flatMap { LatencyMode(rawValue: $0) }
+        guard args.count >= 1 else { print(usage); exit(2) }
+        try runReceiveMulti(targets: args, codes: codes, volumes: volumes, name: name, wav: wav, seconds: seconds,
+                            mode: mode, muteIndexes: muteLast ? [args.count - 1] : [])
     case "receive":
         let code = UInt32(option("--code", default: "0")!) ?? 0
         let name = option("--name", default: "halltone-cli")!
