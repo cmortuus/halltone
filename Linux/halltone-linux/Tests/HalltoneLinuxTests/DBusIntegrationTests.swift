@@ -1,5 +1,8 @@
 import Testing
 import Foundation
+#if canImport(Glibc)
+import Glibc
+#endif
 import HalltoneCore
 @testable import HalltoneLinuxKit
 
@@ -8,7 +11,9 @@ import HalltoneCore
 /// packets. Needs `dbus-run-session`, busctl and python3-gi, so CI runs it as
 /// `HALLTONE_DBUS_TEST=1 dbus-run-session -- swift test --filter DBusIntegrationTests`; elsewhere
 /// it is skipped.
-@Suite(.serialized, .timeLimit(.minutes(3)),
+func trace(_ s: String) { FileHandle.standardError.write(Data("[dbus-test] \(s)\n".utf8)) }
+
+@Suite(.serialized, .timeLimit(.minutes(1)),
        .enabled(if: ProcessInfo.processInfo.environment["HALLTONE_DBUS_TEST"] == "1",
                 "set HALLTONE_DBUS_TEST=1 inside dbus-run-session"))
 struct DBusIntegrationTests {
@@ -25,7 +30,9 @@ struct DBusIntegrationTests {
             process.arguments = ["python3", DBusIntegrationTests.fixture, name, status] + (identity.map { [$0] } ?? [])
             process.standardOutput = out
             process.standardError = err
+            trace("starting fake player \(name)")
             try process.run()
+            trace("fake player \(name) pid \(process.processIdentifier)")
             // Wait for "ready" with a deadline, and say what the player printed if it doesn't come.
             let lock = NSLock(); var text = "", errText = ""
             let ready = DispatchSemaphore(value: 0)
@@ -44,7 +51,9 @@ struct DBusIntegrationTests {
                     lock.lock(); errText += String(decoding: d, as: UTF8.self); lock.unlock()
                 }
             }
-            if ready.wait(timeout: .now() + 20) != .success {
+            let ok = ready.wait(timeout: .now() + 20) == .success
+            trace("fake player \(name) ready: \(ok)")
+            if !ok {
                 lock.lock(); defer { lock.unlock() }
                 let env = ProcessInfo.processInfo.environment
                 let diag = "fake MPRIS player \(name) not ready after 20 s (running: \(process.isRunning)); stdout: \(text); stderr: \(errText); DBUS_SESSION_BUS_ADDRESS=\(env["DBUS_SESSION_BUS_ADDRESS"] ?? "unset") XDG_RUNTIME_DIR=\(env["XDG_RUNTIME_DIR"] ?? "unset")"
@@ -52,7 +61,11 @@ struct DBusIntegrationTests {
                 throw ConfigError(diag)
             }
         }
-        func stop() { if process.isRunning { process.terminate(); process.waitUntilExit() } }
+        func stop() {
+            guard process.isRunning else { return }
+            kill(process.processIdentifier, SIGKILL)   // no waitUntilExit: it can wedge in test contexts
+            trace("killed fake player")
+        }
     }
 
     static func status(_ backend: BusctlBackend, _ name: String) -> MPRISStatus? {
@@ -62,7 +75,9 @@ struct DBusIntegrationTests {
     @Test func busctlBackendListsAndDrivesAPlayer() throws {
         let p = try FakePlayer("fakea", "Playing", identity: "Fake A"); defer { p.stop() }
         let backend = BusctlBackend()
+        trace("listing")
         let list = try backend.players()
+        trace("listed \(list.count)")
         let a = try #require(list.first { $0.shortName == "fakea" })
         #expect(a.status == .playing)
         #expect(a.identity == "Fake A")
