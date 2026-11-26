@@ -5,6 +5,7 @@ import AudioToolbox
 import AVFoundation
 import os
 import HalltoneCore
+import HalltoneSenderCore
 
 private let log = Logger(subsystem: Constants.logSubsystem, category: "ProcessTap")
 
@@ -36,6 +37,12 @@ public final class ProcessTapSource: AudioSource {
 
     public private(set) var format: AVAudioFormat?
     public var dataAvailable: DispatchSemaphore?
+    public var sampleRate: Double? { format?.sampleRate }
+
+    public func makeResampler() -> AudioResampler? {
+        guard let format, format.sampleRate != Constants.sampleRate else { return nil }
+        return AVAudioConverterResampler(from: format)
+    }
     public let muteWhileTapped: Bool
     /// Processes (pids) to exclude from the tap, e.g. our own process.
     public let excludedProcesses: [pid_t]

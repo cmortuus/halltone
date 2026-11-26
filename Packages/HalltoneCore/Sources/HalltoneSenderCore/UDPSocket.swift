@@ -1,9 +1,12 @@
-#if os(macOS)
 import Foundation
+#if canImport(Darwin)
 import Darwin
+#else
+import Glibc
+#endif
 import CHalltone
 
-/// Minimal dual-stack UDP socket. `sendto` from the encode thread costs a few microseconds,
+/// Minimal dual-stack UDP socket (macOS and Linux). `sendto` from the encode thread costs a few microseconds,
 /// versus the per-packet dispatch/allocation overhead of NWConnection.send.
 final class UDPSocket {
     enum Failure: Error, CustomStringConvertible {
@@ -24,9 +27,11 @@ final class UDPSocket {
     private struct PeerKey: Hashable {
         var a: UInt64, b: UInt64, port: UInt16
         init(_ s: sockaddr_storage) {
+            let isV6 = s.ss_family == sa_family_t(AF_INET6)
             var s = s
             (a, b, port) = withUnsafeBytes(of: &s) { raw in
-                guard raw.load(fromByteOffset: 1, as: UInt8.self) == UInt8(AF_INET6) else { return (0, 0, 0) }
+                // sockaddr_in6: port at 2, address at 8..<24 on both Darwin and Linux.
+                guard isV6 else { return (0, 0, 0) }
                 return (raw.loadUnaligned(fromByteOffset: 8, as: UInt64.self),
                         raw.loadUnaligned(fromByteOffset: 16, as: UInt64.self),
                         raw.loadUnaligned(fromByteOffset: 2, as: UInt16.self))
@@ -38,10 +43,14 @@ final class UDPSocket {
     private let localLock = NSLock()
 
     init(port: UInt16) throws {
+        #if canImport(Darwin)
         fd = socket(AF_INET6, SOCK_DGRAM, 0)
+        #else
+        fd = socket(AF_INET6, Int32(SOCK_DGRAM.rawValue), 0) // an enum on Glibc
+        #endif
         guard fd >= 0 else { throw Failure.socket(errno) }
         var off: Int32 = 0
-        setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &off, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(fd, Int32(IPPROTO_IPV6), IPV6_V6ONLY, &off, socklen_t(MemoryLayout<Int32>.size))
         var on: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, socklen_t(MemoryLayout<Int32>.size))
         var tv = timeval(tv_sec: 0, tv_usec: 500_000)
@@ -49,19 +58,27 @@ final class UDPSocket {
         // DSCP EF (46) → Wi-Fi WMM "voice" access category: highest priority, and access points
         // deliver it promptly to clients in power save.
         var tclass: Int32 = 46 << 2
-        setsockopt(fd, IPPROTO_IPV6, IPV6_TCLASS, &tclass, socklen_t(MemoryLayout<Int32>.size))
-        setsockopt(fd, IPPROTO_IP, IP_TOS, &tclass, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(fd, Int32(IPPROTO_IPV6), IPV6_TCLASS, &tclass, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(fd, Int32(IPPROTO_IP), IP_TOS, &tclass, socklen_t(MemoryLayout<Int32>.size))
+        #if canImport(Darwin)
         var svc: Int32 = NET_SERVICE_TYPE_VO
         setsockopt(fd, SOL_SOCKET, SO_NET_SERVICE_TYPE, &svc, socklen_t(MemoryLayout<Int32>.size))
+        #else
+        // Linux: priority 6 puts the packets in the Wi-Fi "voice" queue of mac80211 drivers.
+        var prio: Int32 = 6
+        setsockopt(fd, SOL_SOCKET, SO_PRIORITY, &prio, socklen_t(MemoryLayout<Int32>.size))
+        #endif
         var bufSize: Int32 = 1 << 20
         setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bufSize, socklen_t(MemoryLayout<Int32>.size))
         var addr = sockaddr_in6()
+        #if canImport(Darwin)
         addr.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
+        #endif
         addr.sin6_family = sa_family_t(AF_INET6)
-        addr.sin6_port = port.bigEndian
-        addr.sin6_addr = in6addr_any
+        addr.sin6_port = port.bigEndian // sin6_addr stays zero: in6addr_any
+        let sock = fd
         let rc = withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in6>.size)) }
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(sock, $0, socklen_t(MemoryLayout<sockaddr_in6>.size)) }
         }
         guard rc == 0 else { let e = errno; close(fd); throw Failure.bind(e) }
         es_udp_enable_pktinfo(fd)
@@ -94,7 +111,7 @@ final class UDPSocket {
         let local = localFor[PeerKey(addr)]
         localLock.unlock()
         guard var local else {
-            let len32 = socklen_t(addr.ss_len)
+            let len32 = Self.length(of: addr)
             return withUnsafePointer(to: &a) {
                 $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { sendto(fd, ptr, len, 0, $0, len32) }
             }
@@ -104,11 +121,24 @@ final class UDPSocket {
         }
     }
 
-    func shutdownForClose() { Darwin.shutdown(fd, SHUT_RDWR) }
+    func shutdownForClose() { _ = shutdown(fd, 2 /* SHUT_RDWR */) }
+
+    /// Darwin sockaddrs carry their length; Linux derives it from the family.
+    static func length(of addr: sockaddr_storage) -> socklen_t {
+        #if canImport(Darwin)
+        return socklen_t(addr.ss_len)
+        #else
+        switch Int32(addr.ss_family) {
+        case AF_INET: return socklen_t(MemoryLayout<sockaddr_in>.size)
+        case AF_INET6: return socklen_t(MemoryLayout<sockaddr_in6>.size)
+        default: return socklen_t(MemoryLayout<sockaddr_storage>.size)
+        }
+        #endif
+    }
 
     static func describe(_ addr: sockaddr_storage) -> String {
         var a = addr
-        let len32 = socklen_t(addr.ss_len)
+        let len32 = length(of: addr)
         var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
         var serv = [CChar](repeating: 0, count: Int(NI_MAXSERV))
         let hostCount = socklen_t(host.count), servCount = socklen_t(serv.count)
@@ -123,4 +153,3 @@ final class UDPSocket {
         return "\(h):\(String(cString: serv))"
     }
 }
-#endif
