@@ -47,6 +47,12 @@ struct MenuView: View {
                     .help("A listening iPhone asked this Mac not to take its headphones back. Turn it off in Halltone on the iPhone.")
             }
             Toggle("Mute Mac speakers while streaming", isOn: $model.muteWhileStreaming)
+            Toggle("Let paired devices pause playback", isOn: $model.allowRemoteControl)
+                .help("A device with your pairing code, such as a gaming PC, can pause what's playing here while it needs your attention, and resume it afterwards if you haven't. Uses the same Accessibility permission as headphone controls.")
+            if let peer = model.remotePausedFor {
+                Label("Paused for \(peer)", systemImage: "pause.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Picker("Codec", selection: $model.codec) {
                 Text("Opus (128 kbps)").tag(CodecID.opus)
                 Text("PCM 16-bit (1.5 Mbps)").tag(CodecID.pcm16)

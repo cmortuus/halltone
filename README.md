@@ -138,6 +138,8 @@ type, seq (u32), session (u32). Types:
 | RESEND 0x08 | phone → Mac | up to 64 missing `samplePos` values; the Mac resends from a 256-packet history |
 | AUDIO 0x10 | Mac → phone | `samplePos u64, codec u8, len u16, payload` |
 | CONTROL 0x20 | both | play/pause, next, previous, hold headphones on/off, pause, play, listening, not listening |
+| REMOTE_CONTROL 0x21 | paired device → Mac | `pairing code u32, command u8, request id u32, peer name`. Command 1 = pause for peer, 2 = resume for peer. The sender needn't be subscribed. Retry with the same request id every 300 ms until the ACK arrives |
+| REMOTE_CONTROL_ACK 0x22 | Mac → peer | `request id u32, result u8`: 1 paused, 2 notPlaying, 3 resumed, 4 resumeSkipped (the user changed something), 5 failed, 6 badPairingCode, 7 disabled |
 
 Codecs: 1 = PCM16 interleaved stereo (240-sample / 5 ms frames, ~1.5 Mbps); 2 = Opus 48 kHz stereo
 (480-sample / 10 ms frames, 128 kbps VBR, restricted-low-delay, in-band FEC flag on).
@@ -149,6 +151,26 @@ replies from an address it didn't contact.
 
 Phone logs (TCP 47801): `HTLOG1 <pairing code> <bytes> <base64 phone name>\n` then the file; the
 Mac answers `OK` or `NO <reason>`.
+
+### Remote pause (REMOTE_CONTROL)
+
+Another paired device, such as the gaming PC, can pause what the Mac is playing and later resume
+it only if nothing changed in between (`RemoteControlCoordinator`, no CoreAudio in it, unit
+tested). The menu's **Let paired devices pause playback** switch (on by default) turns it off;
+the Mac then answers `disabled`.
+
+- **Pause** presses the media key only if the captured audio says something is playing. With no
+  capture running (no phone listening) or one younger than 0.5 s, the Mac probes: it starts a
+  capture for up to 500 ms, decides, and stops it again. If it can't tell, the answer is `failed`
+  and no key is pressed. Silent now but audible within 2 s waits for sound (press) or 2 s of
+  silence (`notPlaying`), like the headphone pause. A pause marks "paused for <peer>" (shown in the
+  menu); repeating it while paused is answered `paused` without another press.
+- **Resume** presses the key only if that same peer paused, less than 10 minutes ago (each pause
+  request renews it), and nothing was audible since the pause's tail (1.5 s). A capture that
+  wasn't running the whole time is probed as well. Otherwise `resumeSkipped`. The mark is cleared
+  either way, except when the key press itself failed (the peer can retry).
+- A retry with the same request id (the peer's 300 ms timeout) gets the same answer and never
+  presses twice. A bad pairing code gets `badPairingCode` and nothing else happens.
 
 ## Receiver behavior
 
@@ -197,6 +219,10 @@ $CLI analyze rx.wav                               # RMS, dominant frequency, sil
 $CLI send --source tone --codec opus --no-bonjour --sim-loss 0.05 --sim-jitter 40 --latency-log s.csv
 $CLI receive 127.0.0.1:47800 --wav rx.wav --seconds 20 --latency-log r.csv
 $CLI latency s.csv r.csv
+
+# Pause / resume what's playing on a Mac running Halltone (REMOTE_CONTROL); prints the Mac's answer:
+$CLI remote 127.0.0.1 --code 1234 pause        # or HOST:PORT; --name sets the peer name
+$CLI remote 127.0.0.1 --code 1234 resume
 ```
 
 The latency report measures encode → scheduled-at-sink inside one Mac (same clock). Add the

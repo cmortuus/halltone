@@ -22,6 +22,10 @@ public enum MessageType: UInt8 {
     case resend = 0x08
     case audio = 0x10
     case control = 0x20
+    /// Another paired Halltone device (not necessarily a subscriber) asks this Mac to pause or
+    /// resume what's playing. Answered with REMOTE_CONTROL_ACK. Older Macs ignore it.
+    case remoteControl = 0x21
+    case remoteControlAck = 0x22
 }
 
 public enum CodecID: UInt8 {
@@ -56,6 +60,27 @@ public enum ControlCommand: UInt8 {
         case .holdHeadphonesOn, .holdHeadphonesOff, .listening, .notListening: return false
         }
     }
+}
+
+/// What a REMOTE_CONTROL asks for.
+public enum RemoteCommand: UInt8 {
+    /// Pause whatever is playing, remembering that this peer did it.
+    case pauseForPeer = 1
+    /// Resume, but only if that pause is still in effect (see `RemoteControlCoordinator`).
+    case resumeForPeer = 2
+}
+
+/// The Mac's answer in REMOTE_CONTROL_ACK.
+public enum RemoteResult: UInt8 {
+    case paused = 1
+    case notPlaying = 2
+    case resumed = 3
+    /// The pause is no longer in effect (the user changed something, or it expired).
+    case resumeSkipped = 4
+    case failed = 5
+    case badPairingCode = 6
+    /// "Let paired devices pause playback" is off on the Mac.
+    case disabled = 7
 }
 
 /// Bits of the STATUS message's `flags` byte.
@@ -112,6 +137,11 @@ public enum Message: Equatable {
     case resend(samplePositions: [UInt64])
     case audio(samplePos: UInt64, codec: CodecID, payload: Data)
     case control(command: ControlCommand)
+    /// Peer → Mac. `requestID` is chosen by the peer; a retry reuses it, and the Mac answers a
+    /// duplicate without acting twice.
+    case remoteControl(pairingCode: UInt32, command: RemoteCommand, requestID: UInt32, peerName: String)
+    /// Mac → peer.
+    case remoteControlAck(requestID: UInt32, result: RemoteResult)
 
     public var type: MessageType {
         switch self {
@@ -125,6 +155,8 @@ public enum Message: Equatable {
         case .resend: return .resend
         case .audio: return .audio
         case .control: return .control
+        case .remoteControl: return .remoteControl
+        case .remoteControlAck: return .remoteControlAck
         }
     }
 }
@@ -180,6 +212,10 @@ public struct Packet: Equatable {
             w.u64(pos); w.u8(codec.rawValue); w.u16(UInt16(min(payload.count, Int(UInt16.max)))); w.bytes(payload)
         case .control(let cmd):
             w.u8(cmd.rawValue)
+        case .remoteControl(let code, let cmd, let requestID, let name):
+            w.u32(code); w.u8(cmd.rawValue); w.u32(requestID); w.shortString(name)
+        case .remoteControlAck(let requestID, let result):
+            w.u32(requestID); w.u8(result.rawValue)
         }
         return w.data
     }
@@ -229,6 +265,13 @@ public struct Packet: Equatable {
         case .control:
             guard let raw = r.u8(), let cmd = ControlCommand(rawValue: raw) else { return nil }
             message = .control(command: cmd)
+        case .remoteControl:
+            guard let code = r.u32(), let rawCmd = r.u8(), let cmd = RemoteCommand(rawValue: rawCmd),
+                  let requestID = r.u32(), let name = r.shortString() else { return nil }
+            message = .remoteControl(pairingCode: code, command: cmd, requestID: requestID, peerName: name)
+        case .remoteControlAck:
+            guard let requestID = r.u32(), let rawResult = r.u8(), let result = RemoteResult(rawValue: rawResult) else { return nil }
+            message = .remoteControlAck(requestID: requestID, result: result)
         }
         return Packet(header: header, message: message)
     }
