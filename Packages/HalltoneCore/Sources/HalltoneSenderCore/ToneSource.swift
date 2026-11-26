@@ -1,12 +1,10 @@
-#if os(macOS)
 import Foundation
-import AVFoundation
 import HalltoneCore
 
 /// Synthetic 48 kHz stereo source for testing without the process tap: a sine plus a short
 /// click once per second (the click makes latency measurable at the receiver).
 public final class ToneSource: AudioSource {
-    public private(set) var format: AVAudioFormat?
+    public private(set) var sampleRate: Double?
     public var dataAvailable: DispatchSemaphore?
     public let frequency: Double
     public let amplitude: Float
@@ -26,7 +24,7 @@ public final class ToneSource: AudioSource {
     public func start(into ring: RingBuffer) throws {
         guard !running else { return }
         running = true
-        format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Constants.sampleRate, channels: 2, interleaved: true)
+        sampleRate = Constants.sampleRate
         let t = Thread { [self] in
             let rate = Constants.sampleRate
             var phase = 0.0
@@ -63,4 +61,3 @@ public final class ToneSource: AudioSource {
         thread = nil
     }
 }
-#endif
