@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Portable HalltoneCore (wire format, codecs, jitter buffer, ring, libopus) on Ubuntu 24.04.
+  linux-core:
+    name: Linux (Ubuntu 24.04) - HalltoneCore build + test
+    runs-on: ubuntu-24.04
+    container: swift:6.1-noble
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift version
+        run: swift --version
+      - name: Build
+        working-directory: Packages/HalltoneCore
+        run: swift build
+      - name: Test
+        working-directory: Packages/HalltoneCore
+        run: swift test
+
+  # Same package on macOS, including HalltoneSender / HalltoneReceiver, via the repo's test script.
+  macos-core:
+    name: macOS 15 - HalltoneCore tests (scripts/test-core.sh)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift version
+        run: swift --version
+      - name: Test
+        run: scripts/test-core.sh

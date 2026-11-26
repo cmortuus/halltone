@@ -72,6 +72,24 @@ public final class Sender {
     public var userAtMac: (() -> Bool)?
     /// Input in the last ~20 s (reported in STATUS; sent at once on change).
     public var userInputRecent: (() -> Bool)?
+    /// REMOTE_CONTROL: presses the play/pause media key; false if it couldn't. nil: can't press.
+    public var onRemotePlayPause: (() -> Bool)?
+    /// Whether "let paired devices pause playback" is on (nil: on). Read from any thread.
+    public var remoteControlEnabled: (() -> Bool)?
+    /// Called (on the remote-control queue) with the peer that paused playback, or nil when that
+    /// pause ended: resumed, the user resumed by hand, or it expired.
+    public var onRemotePauseChanged: ((String?) -> Void)? {
+        didSet { remote.onChange = onRemotePauseChanged }
+    }
+    private lazy var remote = RemoteControlCoordinator(environment: SenderRemoteEnvironment(self))
+    /// Serial: REMOTE_CONTROL requests can block for a probe, and must never double-toggle.
+    private let remoteQueue = DispatchQueue(label: "com.halltone.remote")
+    private let remoteMarked = AtomicCounter()
+    /// Probes (and capture they started) currently in flight.
+    private let probeLock = NSLock()
+    private var probeUsers = 0
+    /// Uptime (ns) when the running capture delivered its start; 0 when not capturing.
+    fileprivate let captureStartedNs = AtomicUInt64()
     private var lastUserAtMac: Bool?
     private var lastInputRecent: Bool?
     private var lastPlaying = false
@@ -329,6 +347,8 @@ public final class Sender {
         case .control(let cmd):
             let ok = onControl?(cmd) ?? false
             if !ok { sendStatus(to: [address], lastControlFailed: true) }
+        case .remoteControl(let code, let command, let requestID, let peerName):
+            handleRemote(code: code, command: command, requestID: requestID, peerName: peerName, from: address)
         default:
             break
         }
@@ -428,6 +448,7 @@ public final class Sender {
             }
         }
         updateHoldHeadphones() // expires remote holds (cheap; acts only on a change)
+        if remoteMarked.load() != 0 { remoteQueue.async { [remote] in remote.refresh() } }
         let failed = sendFailures.exchange(0)
         if failed > 0 {
             let e = Int32(lastSendErrno.load())
@@ -499,6 +520,7 @@ public final class Sender {
                 return
             }
             sourceGeneration.add(1)
+            captureStartedNs.store(DispatchTime.now().uptimeNanoseconds)
             log.notice("capture started (\(src.format?.sampleRate ?? 0) Hz)")
             queue.async { self.stats.captureError = nil; self.publish() }
         }
@@ -513,6 +535,7 @@ public final class Sender {
             source?.stop()
             sourceLock.lock(); source = nil; sourceLock.unlock()
             capturing = false
+            captureStartedNs.store(0)
             log.notice("capture stopped")
             queue.async { self.publish() }
         }
@@ -705,6 +728,83 @@ public final class Sender {
             sendFailures.add()
         }
     }
+}
+#endif
+
+#if os(macOS)
+// MARK: - REMOTE_CONTROL
+
+extension Sender {
+    /// Another paired device asks to pause/resume playback. Any device with the pairing code may,
+    /// subscriber or not. Runs off the receive thread: it can wait on a probe capture.
+    fileprivate func handleRemote(code: UInt32, command: RemoteCommand, requestID: UInt32, peerName: String,
+                                  from address: sockaddr_storage) {
+        if let required = config.pairingCode, required != code {
+            log.notice("remote \(String(describing: command), privacy: .public) from \(peerName, privacy: .public): bad pairing code")
+            sendControl(.remoteControlAck(requestID: requestID, result: .badPairingCode), to: address)
+            return
+        }
+        remoteQueue.async { [self] in
+            let enabled = remoteControlEnabled?() ?? true
+            let result = remote.handle(command, peer: peerName, requestID: requestID, enabled: enabled)
+            _ = remoteMarked.exchange(remote.pausedForPeer == nil ? 0 : 1)
+            log.notice("remote \(String(describing: command), privacy: .public) #\(requestID) from \(peerName, privacy: .public): \(String(describing: result), privacy: .public)")
+            sendControl(.remoteControlAck(requestID: requestID, result: result), to: address)
+        }
+    }
+
+    /// Forgets a pause made for a peer (the user turned the feature off).
+    public func clearRemotePause() {
+        remoteQueue.async { [self] in
+            remote.clear()
+            _ = remoteMarked.exchange(0)
+        }
+    }
+
+    /// Runs a capture just long enough to hear whether anything is playing, and stops it again
+    /// unless a listening phone needs it. nil: it never started (no permission, no device).
+    fileprivate func probeForAudio(window: TimeInterval) -> Bool? {
+        probeLock.lock(); probeUsers += 1; probeLock.unlock()
+        startCaptureIfNeeded()
+        defer {
+            probeLock.lock(); probeUsers -= 1; let last = probeUsers == 0; probeLock.unlock()
+            if last, !hasListeningSubscriber { stopCapture() }
+        }
+        func uptime() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
+        // Wait for the tap to come up (a first-run permission prompt can take longer; give up).
+        let giveUp = uptime() + 2_500_000_000
+        while captureStartedNs.load() == 0 {
+            if uptime() > giveUp { return nil }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        let from = captureStartedNs.load()
+        let until = uptime() + UInt64(window * 1e9)
+        while uptime() < until {
+            if lastAudibleUptimeNs.load() > from { return true }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        return lastAudibleUptimeNs.load() > from
+    }
+}
+
+/// The real Mac behind `RemoteControlCoordinator`: capture timestamps and the media key.
+private final class SenderRemoteEnvironment: RemoteControlEnvironment {
+    private weak var sender: Sender?
+    init(_ sender: Sender) { self.sender = sender }
+
+    private static func seconds(_ ns: UInt64) -> TimeInterval { Double(ns) / 1e9 }
+    func now() -> TimeInterval { Self.seconds(DispatchTime.now().uptimeNanoseconds) }
+    func sleep(_ seconds: TimeInterval) { Thread.sleep(forTimeInterval: seconds) }
+    func lastAudible() -> TimeInterval? {
+        guard let ns = sender?.lastAudibleUptimeNs.load(), ns != 0 else { return nil }
+        return Self.seconds(ns)
+    }
+    func captureStart() -> TimeInterval? {
+        guard let ns = sender?.captureStartedNs.load(), ns != 0 else { return nil }
+        return Self.seconds(ns)
+    }
+    func probeAudible(window: TimeInterval) -> Bool? { sender?.probeForAudio(window: window) }
+    func pressPlayPause() -> Bool { sender?.onRemotePlayPause?() ?? false }
 }
 #endif
 

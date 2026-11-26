@@ -11,11 +11,15 @@ halltone-cli — Halltone test tool
   send [--port 47800] [--source tap|tone] [--codec pcm|opus] [--mute] [--code N]
        [--no-bonjour] [--seconds N] [--sim-loss 0.05] [--sim-jitter 40]
        [--latency-log send.csv] [--swap-every N] [--sim-burst MS [--sim-burst-every MS]]
-       [--game]                            --game: Game mode (PCM, 2.5 ms frames, 64-frame tap IO buffer)
-                                           run the sender (capture on demand)
+       [--game]                            run the sender (capture on demand); --game: Game mode (PCM,
+                                           2.5 ms frames, 64-frame tap IO buffer)
   receive HOST[:PORT] [--code N] [--name X] [--wav out.wav] [--seconds N]
        [--mode auto|lowest|balanced|stable|game] [--latency-log recv.csv]            subscribe; play (default) or write decoded audio to a WAV
   latency send.csv recv.csv                report loopback latency from the two logs
+  remote HOST[:PORT] --code N [--name X] [--timeout S] pause|resume
+                                           ask the Mac to pause/resume playback (REMOTE_CONTROL) and
+                                           print its answer: paused, notPlaying, resumed,
+                                           resumeSkipped, failed, badPairingCode, disabled
 """
 
 var args = Array(CommandLine.arguments.dropFirst())
@@ -81,6 +85,14 @@ do {
         guard let mode = LatencyMode(rawValue: modeName) else { print("unknown --mode \(modeName)"); print(usage); exit(2) }
         guard let target = args.first else { print(usage); exit(2) }
         try runReceive(target: target, pairingCode: code, name: name, wav: wav, seconds: seconds, latencyLog: latencyLog, mode: mode)
+    case "remote":
+        let code = UInt32(option("--code", default: "0")!) ?? 0
+        let name = option("--name", default: "halltone-cli")!
+        let timeout = Double(option("--timeout", default: "8")!) ?? 8
+        guard args.count == 2, let command = ["pause": RemoteCommand.pauseForPeer, "resume": .resumeForPeer][args[1]] else {
+            print(usage); exit(2)
+        }
+        try runRemote(target: args[0], pairingCode: code, name: name, command: command, timeout: timeout)
     case "latency":
         guard args.count == 2 else { print(usage); exit(2) }
         try reportLatency(send: URL(fileURLWithPath: args[0]), receive: URL(fileURLWithPath: args[1]))

@@ -16,6 +16,7 @@ final class SenderModel: ObservableObject {
         static let gameMode = "gameMode"
         static let port = "port"
         static let pairingCode = "pairingCode"
+        static let allowRemote = "allowRemoteControl"
     }
 
     /// Slow-changing status (subscriber names, capture state, errors): always published.
@@ -28,6 +29,8 @@ final class SenderModel: ObservableObject {
     @Published private(set) var controlsEnabled = MediaKeys.isTrusted
     /// A listening phone asked to keep its headphones (see HeadphoneGuard).
     @Published private(set) var holdingHeadphones = false
+    /// A paired device (the game PC) paused playback and may resume it: its name.
+    @Published private(set) var remotePausedFor: String?
     private let headphoneGuard = HeadphoneGuard()
     private lazy var beacon = ProximityBeacon(name: macName)
     private let phoneLogs = PhoneLogReceiver()
@@ -47,6 +50,16 @@ final class SenderModel: ObservableObject {
     @Published var codec: CodecID {
         didSet { defaults.set(Int(codec.rawValue), forKey: Key.codec); restart() }
     }
+    /// "Let paired devices pause playback". Read by the sender from its own threads, hence the
+    /// atomic copy.
+    @Published var allowRemoteControl: Bool {
+        didSet {
+            defaults.set(allowRemoteControl, forKey: Key.allowRemote)
+            _ = remoteAllowed.exchange(allowRemoteControl ? 1 : 0)
+            if !allowRemoteControl { sender?.clearRemotePause() }
+        }
+    }
+    private let remoteAllowed = AtomicCounter()
     /// Game mode: PCM in 2.5 ms frames and a small tap IO buffer (64 frames), for a phone on the desk
     /// next to this Mac (the codec setting is ignored while it's on).
     @Published var gameMode: Bool {
@@ -69,6 +82,9 @@ final class SenderModel: ObservableObject {
         // a delayed echo of what's in your ears. The tap mutes only while capturing, so the Mac
         // is audible again as soon as no phone is connected.
         muteWhileStreaming = defaults.object(forKey: Key.mute) as? Bool ?? true
+        let allowRemote = defaults.object(forKey: Key.allowRemote) as? Bool ?? true
+        allowRemoteControl = allowRemote
+        _ = remoteAllowed.exchange(allowRemote ? 1 : 0)
         codec = CodecID(rawValue: UInt8(defaults.integer(forKey: Key.codec))) ?? .opus
         gameMode = defaults.bool(forKey: Key.gameMode)
         port = UInt16(defaults.integer(forKey: Key.port)) == 0 ? Constants.defaultPort : UInt16(defaults.integer(forKey: Key.port))
@@ -141,6 +157,14 @@ final class SenderModel: ObservableObject {
                 return MediaKeys.send(cmd)
             }
         }
+        // REMOTE_CONTROL (the game PC pausing the video): the Sender decides when to press; this
+        // is only the key.
+        let allowed = remoteAllowed
+        s.remoteControlEnabled = { allowed.load() != 0 }
+        s.onRemotePlayPause = { MediaKeys.send(.playPause) }
+        s.onRemotePauseChanged = { [weak self] peer in
+            DispatchQueue.main.async { self?.remotePausedFor = peer }
+        }
         s.controlsAvailable = { MediaKeys.isTrusted }
         s.canHoldHeadphones = { HeadphoneGuard.available }
         s.userAtMac = { UserPresence.isAtMac }
@@ -170,6 +194,7 @@ final class SenderModel: ObservableObject {
     func restart() {
         headphoneGuard.holding = false
         holdingHeadphones = false
+        remotePausedFor = nil
         sender?.stop()
         sender = nil
         start()

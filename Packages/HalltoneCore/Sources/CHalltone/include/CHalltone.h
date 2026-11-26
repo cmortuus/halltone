@@ -39,6 +39,7 @@ long es_udp_send_from(int fd, const void *buf, size_t len, const struct sockaddr
 #ifdef __cplusplus
 }
 #endif
+#ifdef __APPLE__
 // Audio workgroup membership for a helper thread (see audio_workgroup.c). The token is opaque
 // storage for os_workgroup_join_token_s (32 bytes on Apple platforms; padded).
 typedef struct {
@@ -51,6 +52,7 @@ typedef struct {
 int es_wg_join(void *audio_unit, double period_ms, es_wg_membership *m);
 /// Leaves the workgroup joined by es_wg_join (no-op if not joined).
 void es_wg_leave(es_wg_membership *m);
+#endif // __APPLE__
 
 #endif
 

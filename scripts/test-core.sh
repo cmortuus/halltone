@@ -8,9 +8,10 @@ if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app/Contents/Developer ]
 fi
 for attempt in 1 2 3; do
   out=$(swift test "$@" 2>&1)
+  rc=$?
   if ! grep -q "TestingMacros" <<<"$out"; then
     echo "$out"
-    exit 0
+    exit $rc   # propagate test failures (CI relies on this)
   fi
   [ $attempt -eq 2 ] && rm -rf .build
 done
