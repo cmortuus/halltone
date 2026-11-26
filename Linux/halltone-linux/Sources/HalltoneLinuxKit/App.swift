@@ -59,6 +59,69 @@ public enum App {
         return reply.hasPrefix("error") ? 1 : 0
     }
 
+    /// The MediaController for `players` / `media`: pin and ignore from the config file and flags
+    /// (no pairing code needed).
+    private static func standaloneMedia(_ args: [String]) throws -> MediaController {
+        var flags = try Flags.parse(args)
+        flags.pairingCode = flags.pairingCode ?? "1000"
+        let file = try ConfigStore.load(path: flags.configPath ?? ConfigStore.defaultPath())
+        let settings = try MediaSettings.resolve(file: file["media"], flags: flags)
+        return MediaController(pin: settings.player, ignore: settings.ignore)
+    }
+
+    /// `halltone-linux players`: every MPRIS player, its status, and which one commands would reach.
+    public static func playersCommand(_ args: [String]) -> Int32 {
+        do {
+            let media = try standaloneMedia(args)
+            guard let entries = media.listing() else {
+                printError("can't reach the D-Bus session bus (is busctl installed and a desktop session running?)")
+                return 1
+            }
+            if entries.isEmpty { print("no MPRIS players (open a player that supports media keys, e.g. Firefox with a video)"); return 0 }
+            for e in entries {
+                let p = e.player
+                let note = e.ignored ? "  (ignored)" : e.chosen ? "  <- controlled" : ""
+                let title = p.title.isEmpty ? "" : "  \(p.title)"
+                print("\(p.status.rawValue.padding(toLength: 8, withPad: " ", startingAt: 0))  \(p.shortName)\(p.identity.isEmpty ? "" : " [\(p.identity)]")\(title)\(note)")
+            }
+            return 0
+        } catch { printError("\(error)"); return 2 }
+    }
+
+    /// `halltone-linux media pause|play|toggle|next|previous|status`.
+    public static func mediaCommand(_ args: [String]) -> Int32 {
+        guard let word = args.first, !word.hasPrefix("-") else {
+            printError("usage: halltone-linux media pause|play|toggle|next|previous|status")
+            return 2
+        }
+        do {
+            let media = try standaloneMedia(Array(args.dropFirst()))
+            if word == "status" {
+                guard let entries = media.listing() else { printError("can't reach the D-Bus session bus"); return 1 }
+                guard let c = entries.first(where: { $0.chosen }) else { print("no player"); return 1 }
+                print("\(c.player.status.rawValue.lowercased()): \(c.player.shortName)\(c.player.title.isEmpty ? "" : " - \(c.player.title)")")
+                return 0
+            }
+            let command: MediaCommand
+            switch word {
+            case "pause": command = .pause
+            case "play": command = .play
+            case "toggle": command = .playPause
+            case "next": command = .next
+            case "previous": command = .previous
+            default:
+                printError("unknown media command \"\(word)\" (pause, play, toggle, next, previous, status)")
+                return 2
+            }
+            guard media.perform(command) else {
+                printError("no player to control, or it didn't answer (see `halltone-linux players`)")
+                return 1
+            }
+            print("ok: \(word)")
+            return 0
+        } catch { printError("\(error)"); return 2 }
+    }
+
     private static func printError(_ text: String) {
         FileHandle.standardError.write(Data("halltone-linux: \(text)\n".utf8))
     }

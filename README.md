@@ -180,16 +180,47 @@ doesn't pick a Docker or VPN address, and `ts`, the Tailscale address).
 | `pulseDevice` / `--device` | PulseAudio source to record, default `@DEFAULT_MONITOR@` |
 | `--source tone` | built-in 440 Hz test tone instead of PulseAudio (no audio server needed) |
 | `--source wav:<file>` | plays a WAV file once in real time (test input; used by the dialog-pause tests) |
+| `media.player` / `--media-player` | pin the MPRIS player the controls act on (substring of its bus name or identity, e.g. `firefox`) |
+| `media.ignore` / `--media-ignore` | list (flag: comma-separated) of players never touched, e.g. a game that registers MPRIS |
+| `allowRemoteControl` / `--no-remote-control` | let paired devices pause and resume this PC's player (default on) |
 | `dialogPause.*` / `--dialog-*` | pause the Mac's video during game dialog, see below (off by default) |
 
 `halltone-linux --help` lists everything. Restart after editing the config:
 `systemctl --user restart halltone`.
 
-**Differences from the Mac sender.** No media keys: STATUS reports `controlsAvailable` false and
-CONTROL media keys from the lock screen are ignored. REMOTE_CONTROL *received* by the PC (pause the
-PC from another paired device) answers `disabled`, and there are no headphone holds or "user at the
-PC" flags: those stay Mac-side features of the same sender core. The other direction, the PC asking
-the Mac to pause, is the next section.
+**Media controls (MPRIS).** The PC controls its own player the way the Mac does with media keys,
+over the D-Bus session bus with `busctl --user` (ships with systemd, nothing to install). Firefox,
+Chrome/Chromium (YouTube), mpv, VLC, Spotify and others implement MPRIS.
+
+- **Phone lock screen.** play/pause, next and previous (and the explicit pause/play the phone
+  sends when headphones come out) drive the chosen player. STATUS reports `controlsAvailable`
+  while an MPRIS player exists, and its playing flag comes from the player's real
+  `PlaybackStatus`, so the phone's multi-source logic picks the PC as the media source by itself.
+  Unlike the Mac this never toggles blindly: pause on a paused player is a no-op.
+- **Remote pause.** The PC is a REMOTE_CONTROL *target* too (`halltone-cli remote <pc> --code N
+  pause|resume`, or another paired device): the same `RemoteControlCoordinator` rules as the Mac
+  (see "Remote pause" below), on MPRIS. Pause only if a player is `Playing`; resume only that
+  player, only if it is still `Paused` on the same track, within 10 minutes, and the same peer
+  paused it. The user pressing play, changing track or closing the player ends the pause.
+  `allowRemoteControl: false` answers `disabled`.
+- **Which player.** The one that is `Playing`; with several, the one that started most recently.
+  When none plays, the last one used, else the first by name. `media.player` pins one (substring
+  of the bus name or identity, case-insensitive; no match means no controls), `media.ignore` excludes
+  some. Example: `"media": { "player": "firefox", "ignore": ["steam"] }`.
+- **CLI** (talks to D-Bus directly, no daemon needed; honors `--config`, `--media-player`,
+  `--media-ignore`): `halltone-linux players` lists players with status and marks the one that is
+  controlled or ignored; `halltone-linux media pause|play|toggle|next|previous|status`.
+
+In code, `MediaController` (`Linux/halltone-linux/Sources/HalltoneLinuxKit/MediaController.swift`)
+is the single owner of this and also implements `ExplicitPlaybackEnvironment`, the explicit-state
+variant of `RemoteControlEnvironment` (real state plus Pause/Play, no audio probing) that
+`RemoteControlCoordinator` uses when the environment offers it. The Mac still takes the
+audio-and-toggle path, unchanged.
+
+**Differences from the Mac sender.** No headphone holds and no "user at the PC" flag: those stay
+Mac-side features of the same sender core. Without a D-Bus session bus (a headless box) controls
+are reported unavailable and REMOTE_CONTROL answers `no player` (`notPlaying`). The other direction,
+the PC asking the Mac to pause, is the next section.
 
 **Latency.** On PipeWire the 2.5 ms fragment is a request: the graph's quantum (default 1024 frames,
 21 ms) is lowered to the smallest any client asks for, which this stream does while it runs. If the
@@ -348,6 +379,8 @@ Phone logs (TCP 47801): `HTLOG1 <pairing code> <bytes> <base64 phone name>\n` th
 Mac answers `OK` or `NO <reason>`.
 
 ### Remote pause (REMOTE_CONTROL)
+
+(This is the Mac. A Linux PC answers the same requests from MPRIS state instead of audio: see "Media controls".)
 
 Another paired device, such as the gaming PC, can pause what the Mac is playing and later resume
 it only if nothing changed in between (`RemoteControlCoordinator`, no CoreAudio in it, unit

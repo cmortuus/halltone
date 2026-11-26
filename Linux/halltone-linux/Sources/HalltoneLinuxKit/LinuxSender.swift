@@ -2,16 +2,42 @@ import Foundation
 import HalltoneCore
 import HalltoneSenderCore
 
-/// The sender on Linux: `SenderCore` with Avahi advertising and no media controls.
+/// The sender on Linux: `SenderCore` with Avahi advertising and MPRIS media controls.
 ///
-/// STATUS is still sent (so the phone sees `controlsAvailable` false and whether audio is
-/// playing); CONTROL media keys are ignored; REMOTE_CONTROL is reported as disabled because there
-/// is nothing to press play/pause with. Holds and "user at the PC" stay Mac-side features.
+/// With a `MediaController`: STATUS reports `controlsAvailable` when an MPRIS player exists and
+/// whether it is playing; CONTROL play/pause/next/previous (and explicit pause/play) drive the
+/// chosen player; REMOTE_CONTROL pauses and resumes it through `RemoteControlCoordinator`
+/// (unless `allowRemoteControl` is off). Without one (no D-Bus), controls are unavailable and
+/// REMOTE_CONTROL answers `disabled`. Holds and "user at the PC" stay Mac-side features.
 public final class LinuxSender: SenderCore {
-    public override init(config: Config, source: @escaping () -> AudioSource) {
+    public let media: MediaController?
+
+    public override convenience init(config: Config, source: @escaping () -> AudioSource) {
+        self.init(config: config, media: nil, allowRemoteControl: false, source: source)
+    }
+
+    public init(config: Config, media: MediaController?, allowRemoteControl: Bool, source: @escaping () -> AudioSource) {
+        self.media = media
         super.init(config: config, source: source)
-        controlsAvailable = { false }
-        remoteControlEnabled = { false }
+        guard let media else {
+            controlsAvailable = { false }
+            remoteControlEnabled = { false }
+            return
+        }
+        controlsAvailable = { media.controlsAvailable() }
+        playbackState = { media.peekPlaying() }
+        remoteEnvironment = media
+        remoteControlEnabled = { allowRemoteControl }
+        onControl = { command in
+            switch command {
+            case .playPause: return media.perform(.playPause)
+            case .next: return media.perform(.next)
+            case .previous: return media.perform(.previous)
+            case .pause: return media.perform(.pause)
+            case .play: return media.perform(.play)
+            default: return true // settings (holds, listening) aren't media keys
+            }
+        }
     }
 
     public override func makeAdvertiser(txtValues: [String: String], queue: DispatchQueue) -> AnyObject? {
@@ -25,6 +51,8 @@ public final class LinuxRuntime {
     public let sender: LinuxSender
     /// Dialog pause (detector + REMOTE_CONTROL client); nil without `dialogPause.pairingCode`.
     public let dialog: DialogPauseService?
+    /// MPRIS media control; shared with dialog pause on this PC.
+    public let media: MediaController
     private var control: ControlServer?
 
     public init(config: LinuxConfig) throws {
@@ -36,21 +64,24 @@ public final class LinuxRuntime {
         let service = config.dialogPause.pairingCode == nil ? nil
             : DialogPauseService(settings: config.dialogPause, selfName: config.name)
         dialog = service
+        let media = MediaController(pin: config.media.player, ignore: config.media.ignore)
+        self.media = media
+        let allow = config.allowRemoteControl
         let tap = service?.captureTap
         switch kind {
         case .tone:
-            sender = LinuxSender(config: config.senderConfig()) { ToneSource(blockFrames: tone) }
+            sender = LinuxSender(config: config.senderConfig(), media: media, allowRemoteControl: allow) { ToneSource(blockFrames: tone) }
         case .wav(let path):
             _ = try WavSource(path: path)   // fail at start-up, not at the first subscriber
             let block = fragment
-            sender = LinuxSender(config: config.senderConfig()) {
+            sender = LinuxSender(config: config.senderConfig(), media: media, allowRemoteControl: allow) {
                 // A fresh player each time capture starts; the file was checked above.
                 let wav: AudioSource? = try? WavSource(path: path, blockFrames: block, tap: tap)
                 return wav ?? ToneSource(amplitude: 0)
             }
         case .pulse:
             #if canImport(CPulseSimple)
-            sender = LinuxSender(config: config.senderConfig()) {
+            sender = LinuxSender(config: config.senderConfig(), media: media, allowRemoteControl: allow) {
                 PulseSource(device: device, fragmentFrames: fragment, tap: tap)
             }
             #else
@@ -61,6 +92,7 @@ public final class LinuxRuntime {
     }
 
     public func start() throws {
+        media.startPolling()
         try sender.start()
         dialog?.start()
         let server = ControlServer(path: config.controlSocket ?? ControlSocket.defaultPath()) { [weak self] in
@@ -75,6 +107,7 @@ public final class LinuxRuntime {
 
     public func stop() {
         control?.stop()
+        media.stopPolling()
         dialog?.stop()    // asks the Mac to resume if it was paused for us
         sender.stop()
     }

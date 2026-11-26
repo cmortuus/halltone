@@ -92,7 +92,13 @@ open class SenderCore {
     public var onRemotePauseChanged: ((String?) -> Void)? {
         didSet { remote.onChange = onRemotePauseChanged }
     }
-    private lazy var remote = RemoteControlCoordinator(environment: SenderRemoteEnvironment(self))
+    /// Replaces the audio-and-media-key environment behind REMOTE_CONTROL (Linux: MPRIS). Set
+    /// before the first request.
+    public var remoteEnvironment: RemoteControlEnvironment?
+    /// Real playback state from the platform (Linux: MPRIS), used for STATUS's playing flag. nil
+    /// result (or hook): fall back to "audio was audible".
+    public var playbackState: (() -> Bool?)?
+    private lazy var remote = RemoteControlCoordinator(environment: remoteEnvironment ?? SenderRemoteEnvironment(self))
     /// Serial: REMOTE_CONTROL requests can block for a probe, and must never double-toggle.
     private let remoteQueue = DispatchQueue(label: "com.halltone.remote")
     private let remoteMarked = AtomicCounter()
@@ -107,7 +113,8 @@ open class SenderCore {
 
     /// Captured audio was audible within the last 2 s.
     public func isPlaying() -> Bool {
-        DispatchTime.now().uptimeNanoseconds &- lastAudibleUptimeNs.load() < 2_000_000_000
+        if let explicit = playbackState?() { return explicit }
+        return DispatchTime.now().uptimeNanoseconds &- lastAudibleUptimeNs.load() < 2_000_000_000
     }
     private var holdingHeadphones = false
     /// Hold requests from phones subscribed to another Mac (address → last request).

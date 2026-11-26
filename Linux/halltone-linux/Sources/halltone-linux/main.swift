@@ -38,6 +38,14 @@ if CommandLine.arguments.dropFirst().first == "dialog" {
     exit(App.dialogCommand(Array(CommandLine.arguments.dropFirst(2))))
 }
 
+// `halltone-linux players` / `media pause|play|status`: MPRIS directly, no daemon needed.
+if CommandLine.arguments.dropFirst().first == "players" {
+    exit(App.playersCommand(Array(CommandLine.arguments.dropFirst(2))))
+}
+if CommandLine.arguments.dropFirst().first == "media" {
+    exit(App.mediaCommand(Array(CommandLine.arguments.dropFirst(2))))
+}
+
 switch App.start(arguments: Array(CommandLine.arguments.dropFirst())) {
 case .failure(let code):
     exit(code.value)

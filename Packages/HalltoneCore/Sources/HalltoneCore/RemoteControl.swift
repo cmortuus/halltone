@@ -17,6 +17,38 @@ public protocol RemoteControlEnvironment: AnyObject {
     func pressPlayPause() -> Bool
 }
 
+/// What an explicit-state player reports (Linux MPRIS), as opposed to the Mac's guess from audio.
+public enum ExplicitPlayback: Equatable {
+    /// A player is playing; `token` names what would be paused (player + track).
+    case playing
+    case notPlaying
+    /// Couldn't ask (no bus, backend failed).
+    case unknown
+}
+
+/// An environment that knows real playback state and has explicit Pause / Play, so the coordinator
+/// needs no audio probing and no toggle. MPRIS on Linux implements it. The audio-based members of
+/// `RemoteControlEnvironment` get inert defaults (they're never consulted in this mode).
+///
+/// A "token" identifies what we paused (the player and its current track); it is opaque here.
+public protocol ExplicitPlaybackEnvironment: RemoteControlEnvironment {
+    func playbackState() -> ExplicitPlayback
+    /// Pauses what is playing (and checks that it took). Returns its token, nil if it couldn't.
+    func pausePlayback() -> String?
+    /// Plays the thing `token` names. False if it couldn't.
+    func resumePlayback(token: String) -> Bool
+    /// Still paused where we left it: that player exists, is Paused, and is on the same track.
+    /// False means the user resumed by hand, changed track, or closed the player.
+    func isStillPaused(token: String) -> Bool
+}
+
+public extension ExplicitPlaybackEnvironment {
+    func lastAudible() -> TimeInterval? { nil }
+    func captureStart() -> TimeInterval? { nil }
+    func probeAudible(window: TimeInterval) -> Bool? { nil }
+    func pressPlayPause() -> Bool { false }
+}
+
 public struct RemoteControlTiming {
     /// A pause is only undone within this long of the last pause request from that peer.
     public var maxResumeAge: TimeInterval = 600
@@ -47,6 +79,8 @@ public final class RemoteControlCoordinator {
         var pausedAt: TimeInterval
         /// Last pause request from the peer (extends the 10-minute expiry).
         var refreshedAt: TimeInterval
+        /// Explicit environments: what was paused (see `ExplicitPlaybackEnvironment`).
+        var token: String?
     }
 
     private struct Answered {
@@ -110,6 +144,7 @@ public final class RemoteControlCoordinator {
             return .paused
         }
         setMark(nil)
+        if let explicit = env as? ExplicitPlaybackEnvironment { return pauseExplicit(explicit, peer: peer) }
         switch observePlaying() {
         case .unknown: return .failed
         case .notPlaying: return .notPlaying
@@ -117,6 +152,18 @@ public final class RemoteControlCoordinator {
             guard env.pressPlayPause() else { return .failed }
             let t = env.now()
             setMark(Mark(peer: peer, pausedAt: t, refreshedAt: t))
+            return .paused
+        }
+    }
+
+    private func pauseExplicit(_ e: ExplicitPlaybackEnvironment, peer: String) -> RemoteResult {
+        switch e.playbackState() {
+        case .unknown: return .failed
+        case .notPlaying: return .notPlaying
+        case .playing:
+            guard let token = e.pausePlayback() else { return .failed }
+            let t = env.now()
+            setMark(Mark(peer: peer, pausedAt: t, refreshedAt: t, token: token))
             return .paused
         }
     }
@@ -149,6 +196,11 @@ public final class RemoteControlCoordinator {
         guard let m = mark, m.peer == peer else { return .resumeSkipped }
         let t = env.now()
         guard isValid(m, at: t) else { setMark(nil); return .resumeSkipped }
+        if let explicit = env as? ExplicitPlaybackEnvironment, let token = m.token {
+            guard explicit.resumePlayback(token: token) else { return .failed } // keep the mark: retry
+            setMark(nil)
+            return .resumed
+        }
         // Audio since the pause is in the capture's timestamps. A capture that wasn't running the
         // whole time can't vouch for the gap, so listen for a moment too.
         if let start = env.captureStart(), start <= m.pausedAt + 0.25 {
@@ -166,6 +218,10 @@ public final class RemoteControlCoordinator {
 
     private func isValid(_ m: Mark, at t: TimeInterval) -> Bool {
         if t - m.refreshedAt >= timing.maxResumeAge { return false }
+        if let explicit = env as? ExplicitPlaybackEnvironment, let token = m.token {
+            // Real state: still Paused on the same track, or the user (or something) moved on.
+            return explicit.isStillPaused(token: token)
+        }
         // Audible after our pause (past its tail) means the user, or something else, is playing.
         if let heard = env.lastAudible(), heard > m.pausedAt + timing.graceAfterPause { return false }
         return true
