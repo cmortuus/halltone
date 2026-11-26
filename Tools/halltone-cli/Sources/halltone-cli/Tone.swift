@@ -24,7 +24,7 @@ func writeTone(seconds: Double, frequency: Double, output: URL) throws {
 }
 
 /// Prints RMS, peak and the dominant frequency (coarse DFT over 20 Hz..8 kHz).
-func analyze(_ url: URL) throws {
+func analyze(_ url: URL, tones: [Double] = []) throws {
     let file = try AVAudioFile(forReading: url)
     let fmt = file.processingFormat
     let frames = AVAudioFrameCount(file.length)
@@ -70,4 +70,17 @@ func analyze(_ url: URL) throws {
         if abs(v) < 1e-4 { silentRun += 1 } else { if silentRun >= thresh { dropouts += 1 }; silentRun = 0 }
     }
     print("silent gaps >20ms (excluding tail): \(dropouts)")
+    // Amplitude of each requested sine over the same 1 s window (Goertzel: 2·|X|/N).
+    for f in tones {
+        let w = 2 * .pi * f / rate
+        let c = 2 * cos(w)
+        var s0 = 0.0, s1 = 0.0, s2 = 0.0
+        for i in start..<(start + win) {
+            s0 = Double(mono[i]) + c * s1 - s2
+            s2 = s1; s1 = s0
+        }
+        let power = max(0, s1 * s1 + s2 * s2 - c * s1 * s2)
+        let amplitude = 2 * power.squareRoot() / Double(win)
+        print("tone \(Int(f)) Hz: amplitude \(String(format: "%.3f", amplitude))")
+    }
 }

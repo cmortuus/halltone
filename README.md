@@ -57,7 +57,7 @@ The Mac only captures audio while a subscriber is alive.
 
 | Path | What |
 |---|---|
-| `Packages/HalltoneCore` | SwiftPM package shared by both apps and the CLI: `HalltoneCore` (wire format, codecs, jitter buffer, ring), `HalltoneSenderCore` (the portable sender: UDP listener, pairing, subscribers, STATUS, RESEND, encode loop; macOS and Linux), `HalltoneSender` (macOS glue: process tap, Bonjour, resampling), `HalltoneReceiver` (UDP subscriber, decode pump, AVAudioEngine playback), vendored libopus (`COpus`). |
+| `Packages/HalltoneCore` | SwiftPM package shared by both apps and the CLI: `HalltoneCore` (wire format, codecs, jitter buffer, ring), `HalltoneSenderCore` (the portable sender: UDP listener, pairing, subscribers, STATUS, RESEND, encode loop; macOS and Linux), `HalltoneSender` (macOS glue: process tap, Bonjour, resampling), `HalltoneReceiver` (UDP subscriber, decode pump, source manager, AVAudioEngine playback of the mix bus), vendored libopus (`COpus`). |
 | `Packages/HalltoneDialog` | Standalone SwiftPM package (no Apple frameworks; macOS + Linux): real-time **dialog detector** for 48 kHz stereo game audio (center extraction + vendored libfvad + level/band/modulation gates + hysteresis), and the `halltone-dialog-eval` tool. See its [README](Packages/HalltoneDialog/README.md). |
 | `HalltoneMac` | macOS menu bar app (SwiftUI `MenuBarExtra`). |
 | `HalltonePhone` | iOS app. |
@@ -272,6 +272,23 @@ the Mac then answers `disabled`.
   150–250 ms of their own; the Output row of the status screen shows what iOS reports. The Mac
   and phone settings are independent: Game on the phone with a normal Mac still works (just
   5–10 ms frames), and a Game Mac with another phone mode just sends 2.5 ms frames.
+- **Several sources at once.** Every source in the phone's list has a switch; turning on several
+  connects to all of them and mixes them (game audio from a PC plus a video on the Mac, both in the
+  same AirPods). Each source has its own `Receiver` (socket, jitter buffer, decode pump, hand-off
+  ring, stats, reconnect state) and its own clock-drift handling; sources aren't synchronized with
+  each other. One `AVAudioEngine` with one source node pulls a `MixBus`: it sums every source's ring
+  (up to 8), applies each source's volume (the slider squared, glided over a render callback) and
+  mute, then runs the soft limiter once on the sum, so adding or removing a source never restarts
+  the engine. Per source: volume, mute and latency mode; the default latency is Auto, or Game for a
+  sender whose ACK says 2.5 ms frames (120 samples). Which sources are on, and each one's settings,
+  persist across launches (pairing codes stay per source in the Keychain). The lock screen and
+  headphone buttons go to the *media source*: among sources whose STATUS says controls are
+  available, the one that most recently started playing (a playing source beats a paused one);
+  sources without controls are never targeted, except that a lone source still gets the buttons so a
+  Mac with controls off can explain how to turn them on. Pausing (headphones out, shared output,
+  interruptions, calls) applies to every source together and keeps every subscription; "keep
+  headphones" and the Bluetooth "at the Mac" logic run per Mac. With several sources the
+  diagnostics log prefixes each source's lines with its name (with one source, lines are unchanged).
 - **Jitter buffer** slotted by `samplePos`: handles reorder and duplicates. The target follows the
   recent peak arrival gap plus a margin. Underruns raise it only when the queue was actually
   empty, and gaps longer than the ceiling are ignored, so a single blackout can't ratchet it up.
@@ -315,6 +332,13 @@ $CLI latency s.csv r.csv
 # Pause / resume what's playing on a Mac running Halltone (REMOTE_CONTROL); prints the Mac's answer:
 $CLI remote 127.0.0.1 --code 1234 pause        # or HOST:PORT; --name sets the peer name
 $CLI remote 127.0.0.1 --code 1234 resume
+
+# Several senders at once, mixed through the phone's SourceManager/MixBus into one WAV:
+$CLI send --source tone --freq 440 --port 47810 --no-bonjour &
+$CLI send --source tone --freq 880 --port 47811 --no-bonjour --game &
+$CLI receive --multi 127.0.0.1:47810 127.0.0.1:47811 --volumes 1,0.5 --wav mix.wav --seconds 8
+$CLI analyze mix.wav --tones 440,880              # amplitude of each tone in the mix
+scripts/multi-receive-check.sh                    # all of the above, with pass/fail
 ```
 
 The latency report measures encode → scheduled-at-sink inside one Mac (same clock). Add the

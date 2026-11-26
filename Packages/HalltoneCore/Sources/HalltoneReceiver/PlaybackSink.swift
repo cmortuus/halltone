@@ -1,8 +1,8 @@
 import Foundation
 import HalltoneCore
 
-/// Where decoded PCM goes. The real sink is an AVAudioEngine source node; tests and the CLI can
-/// substitute a file writer that paces itself like a render callback.
+/// Where one source's decoded PCM goes. The real sink is a `PlaybackChannel` of a `MixBus` that
+/// the audio engine pulls; tests and the CLI can pull the same bus into a file.
 public protocol PlaybackSink: AnyObject {
     /// Interleaved stereo 48 kHz float hand-off ring. The decode pump writes, the render side reads.
     var ring: RingBuffer { get }
@@ -27,4 +27,10 @@ public protocol PlaybackSink: AnyObject {
 extension PlaybackSink {
     public var outputAudioUnit: UnsafeMutableRawPointer? { nil }
     public var outputGeneration: UInt32 { 0 }
+}
+
+extension PlaybackChannel: PlaybackSink {
+    /// Joining the mix starts the output when this is the first source.
+    public func start() throws { try attach() }
+    public func stop() { detach() }
 }

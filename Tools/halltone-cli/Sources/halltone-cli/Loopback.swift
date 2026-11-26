@@ -9,7 +9,7 @@ import HalltoneReceiver
 
 func runSend(port: UInt16, sourceKind: String, codec: CodecID, mute: Bool, pairingCode: UInt32?, advertise: Bool,
              seconds: Double?, simLoss: Double, simJitterMs: Double, latencyLog: URL?, swapEvery: Double? = nil, burstMs: Double = 0, burstEveryMs: Double = 2000,
-             game: Bool = false) throws {
+             game: Bool = false, toneFreq: Double = 440) throws {
     var cfg = Sender.Config()
     cfg.port = port
     cfg.codec = codec
@@ -23,7 +23,7 @@ func runSend(port: UInt16, sourceKind: String, codec: CodecID, mute: Bool, pairi
     let latencyWriter = try latencyLog.map { try CSVWriter(url: $0) }
     let sender = Sender(config: cfg) {
         // Game mode: a small tone block like a low-latency tap IO buffer (128 frames; the real tap asks for 64).
-        if sourceKind == "tone" { return ToneSource(blockFrames: game ? 128 : 480) }
+        if sourceKind == "tone" { return ToneSource(frequency: toneFreq, blockFrames: game ? 128 : 480) }
         return ProcessTapSource(muteWhileTapped: mute, excludedProcesses: [getpid()],
                                 ioBufferFrames: game ? ProcessTapSource.gameIOBufferFrames : ProcessTapSource.defaultIOBufferFrames)
     }
@@ -45,7 +45,7 @@ func runSend(port: UInt16, sourceKind: String, codec: CodecID, mute: Bool, pairi
         }
     }
     defer { swapTimer?.invalidate() }
-    print("sending on udp/\(port) source=\(sourceKind) codec=\(cfg.effectiveCodec) frame=\(cfg.frameSamples)\(game ? " (game mode)" : "") pairing=\(pairingCode.map(String.init) ?? "none") sim-loss=\(simLoss) sim-jitter=\(simJitterMs)ms")
+    print("sending on udp/\(port) source=\(sourceKind)\(sourceKind == "tone" ? " \(Int(toneFreq)) Hz" : "") codec=\(cfg.effectiveCodec) frame=\(cfg.frameSamples)\(game ? " (game mode)" : "") pairing=\(pairingCode.map(String.init) ?? "none") sim-loss=\(simLoss) sim-jitter=\(simJitterMs)ms")
     if let seconds {
         RunLoop.main.run(until: Date().addingTimeInterval(seconds))
     } else {
@@ -58,17 +58,20 @@ func runSend(port: UInt16, sourceKind: String, codec: CodecID, mute: Bool, pairi
 
 // MARK: - receive
 
+/// `host` or `host:port`.
+func parseEndpoint(_ target: String) -> NWEndpoint {
+    if let colon = target.lastIndex(of: ":"), let port = UInt16(target[target.index(after: colon)...]) {
+        return .hostPort(host: NWEndpoint.Host(String(target[..<colon])), port: NWEndpoint.Port(rawValue: port)!)
+    }
+    return .hostPort(host: NWEndpoint.Host(target), port: NWEndpoint.Port(rawValue: Constants.defaultPort)!)
+}
+
 func runReceive(target: String, pairingCode: UInt32, name: String, wav: URL?, seconds: Double?, latencyLog: URL?,
                 mode: LatencyMode = .auto) throws {
     let latencyWriter = try latencyLog.map { try CSVWriter(url: $0) }
-    let endpoint: NWEndpoint
-    if let colon = target.lastIndex(of: ":"), let port = UInt16(target[target.index(after: colon)...]) {
-        endpoint = .hostPort(host: NWEndpoint.Host(String(target[..<colon])), port: NWEndpoint.Port(rawValue: port)!)
-    } else {
-        endpoint = .hostPort(host: NWEndpoint.Host(target), port: NWEndpoint.Port(rawValue: Constants.defaultPort)!)
-    }
-    let sink: PlaybackSink = try wav.map { try WavSink(url: $0) } ?? PlaybackEngine()
-    let receiver = Receiver(sink: sink)
+    let endpoint = parseEndpoint(target)
+    let output = try ReceiveOutput(wav: wav)
+    let receiver = Receiver(sink: output.channel())
     receiver.latencyMode = mode
     receiver.onState = { st in print("[recv] state: \(st)"); fflush(stdout) }
     receiver.onStats = { s in
@@ -117,8 +120,37 @@ func runReceive(target: String, pairingCode: UInt32, name: String, wav: URL?, se
     }
     receiver.disconnect()
     RunLoop.main.run(until: Date().addingTimeInterval(0.3))
-    if let w = sink as? WavSink { print("wrote \(w.framesWritten) frames, \(w.underruns.load()) underrun callbacks") }
+    output.finish()
     latencyWriter?.close()
+}
+
+/// Where received audio goes: the speakers (an AVAudioEngine) or a WAV file, both pulling one
+/// `MixBus`, so one or several receivers share the same path the phone uses.
+final class ReceiveOutput {
+    let bus: MixBus
+    private let engine: PlaybackEngine?
+    private let wav: WavMixer?
+
+    init(wav url: URL?) throws {
+        if let url {
+            let w = try WavMixer(url: url)
+            wav = w; engine = nil; bus = w.bus
+        } else {
+            let e = PlaybackEngine()
+            engine = e; wav = nil; bus = e.bus
+        }
+    }
+
+    func channel() -> PlaybackChannel {
+        guard let c = bus.claimChannel() else { fatalError("no free mix channel") }
+        return c
+    }
+
+    func finish() {
+        guard let w = wav else { return }
+        w.close()
+        print("wrote \(w.framesWritten) frames, \(w.underrunCallbacks) underrun callbacks")
+    }
 }
 
 final class CSVWriter {
@@ -152,54 +184,49 @@ func reportLatency(send: URL, receive: URL) throws {
     print("add capture IO buffer (~5-10 ms) and the output device latency on top.")
 }
 
-/// A PlaybackSink that writes to a WAV file, pulling from the ring at a steady 48 kHz like a render
-/// callback would (with 5 ms callbacks). Silence is written on underrun, as the engine would.
-final class WavSink: PlaybackSink {
-    let ring = RingBuffer(capacity: 1 << 17)
-    let underruns = AtomicCounter()
-    let renderedFrames = AtomicUInt64()
-    let wake = DispatchSemaphore(value: 0)
-    let maxCallbackFrames = AtomicCounter()
+/// Pulls a `MixBus` into a WAV file at a steady 48 kHz, like the audio engine's render callbacks
+/// would (5 ms ones by default). Silence is written on underrun, as the engine would. Runs while
+/// any channel is attached.
+final class WavMixer {
+    let bus = MixBus()
     private(set) var framesWritten = 0
-    private let file: AVAudioFile
+    private(set) var underrunCallbacks = 0
+    private var file: AVAudioFile?
     private let format: AVAudioFormat
     private var thread: Thread?
     private var running = false
 
     init(url: URL) throws {
-        format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Constants.sampleRate, channels: 2, interleaved: true)!
+        format = AVAudioFormat(standardFormatWithSampleRate: Constants.sampleRate, channels: 2)!
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: Constants.sampleRate, AVNumberOfChannelsKey: 2,
             AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false,
             AVLinearPCMIsNonInterleaved: false,
         ]
-        file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: true)
+        file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+        bus.startHook = { [unowned self] in start() }
+        bus.stopHook = { [unowned self] in running = false; thread = nil }
     }
 
-    func start() throws {
+    func close() { running = false; thread = nil; Thread.sleep(forTimeInterval: 0.05); file = nil }
+
+    private func start() {
         guard !running else { return }
         running = true
         let t = Thread { [self] in
             let callbackFrames = Int(ProcessInfo.processInfo.environment["HALLTONE_CALLBACK_FRAMES"] ?? "") ?? 240
-            _ = maxCallbackFrames.exchange(UInt32(callbackFrames))
             let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(callbackFrames))!
             let start = Date()
             var produced = 0
             while running {
                 let target = Int(Date().timeIntervalSince(start) * Constants.sampleRate)
                 while produced + callbackFrames <= target, running {
-                    let p = buf.floatChannelData!.pointee
-                    let got = ring.read(into: p, count: callbackFrames * 2)
-                    if got < callbackFrames * 2 {
-                        (p + got).update(repeating: 0, count: callbackFrames * 2 - got)
-                        underruns.add(1)
-                    }
+                    let l = buf.floatChannelData![0], r = buf.floatChannelData![1]
+                    if bus.render(left: l, right: r, frames: callbackFrames) > 0 { underrunCallbacks += 1 }
                     buf.frameLength = AVAudioFrameCount(callbackFrames)
-                    try? file.write(from: buf)
+                    try? file?.write(from: buf)
                     produced += callbackFrames
                     framesWritten += callbackFrames
-                    renderedFrames.add(UInt64(callbackFrames))
-                    wake.signal()
                 }
                 usleep(2_000)
             }
@@ -208,6 +235,4 @@ final class WavSink: PlaybackSink {
         thread = t
         t.start()
     }
-
-    func stop() { running = false; thread = nil }
 }

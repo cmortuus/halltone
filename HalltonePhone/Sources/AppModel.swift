@@ -106,13 +106,47 @@ struct MacEntry: Identifiable, Hashable, Codable {
     var pairingKey: String { kind == .bonjour ? name : id }
 }
 
+/// What the UI shows for one source being listened to.
+struct SourceStatus: Identifiable {
+    let id: String
+    let name: String
+    var stats: Receiver.Stats
+    var config: SourceConfig
+    /// What it plays in: the user's pick, else Auto, or Game for a sender using 2.5 ms frames.
+    var effectiveMode: LatencyMode
+    /// The lock screen and headphone buttons talk to this one.
+    var isMediaSource: Bool
+    var state: Receiver.State { stats.state }
+}
+
+/// Per-source bookkeeping that used to be single properties of the model: where it was reached,
+/// the address fallback, Bluetooth proximity (per Mac), and the stats log throttle.
+private final class SourceRuntime {
+    var mac: MacEntry
+    var code: UInt32
+    var host: String?
+    /// Where full diagnostics logs go (this Mac), and the code it accepts them with.
+    var logHost: String?
+    /// The other address (LAN or Tailscale) to try if this one stops getting through.
+    var alternate: String?
+    var fallbackTask: Task<Void, Never>?
+    /// Bluetooth signal strength to this Mac, for Auto latency.
+    let proximity = MacProximity()
+    var proximityRunning = false
+    var statsCounter = 0
+    var lastLoggedUnderruns: UInt64 = 0
+
+    init(mac: MacEntry, code: UInt32) { self.mac = mac; self.code = code }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     private enum Key {
         static let manual = "manualMacs"
         static let autoConnect = "autoConnect"
         static let lastMac = "lastMac"
-        static let latencyMode = "latencyMode"
+        /// Before several sources: one global latency mode. Seeds the per-source setting once.
+        static let legacyLatencyMode = "latencyMode"
         static let keepHeadphones = "keepHeadphones"
         /// [Mac id: "host:port"]: last advertised address of each Bonjour Mac.
         static let knownAddresses = "knownAddresses"
@@ -123,10 +157,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var discovered: [MacEntry] = []
     @Published private(set) var manual: [MacEntry] = []
     @Published private(set) var selected: MacEntry?
-    @Published private(set) var state: Receiver.State = .idle {
-        didSet { updateIdleTimer() }
-    }
-    @Published private(set) var stats = Receiver.Stats()
+    /// The sources being listened to, in the order they were turned on.
+    @Published private(set) var sources: [SourceStatus] = []
     @Published private(set) var paused = false {
         didSet { updateIdleTimer() }
     }
@@ -134,22 +166,12 @@ final class AppModel: ObservableObject {
     /// output buffer, ms), refreshed with the stats. Bluetooth shows up here as 150+ ms.
     @Published private(set) var outputLatencyMs = 0
     @Published var autoConnect: Bool { didSet { defaults.set(autoConnect, forKey: Key.autoConnect) } }
-    @Published var latencyMode: LatencyMode {
-        didSet {
-            defaults.set(latencyMode.rawValue, forKey: Key.latencyMode)
-            receiver.latencyMode = latencyMode
-            diag("latency mode: \(latencyMode.rawValue)")
-            updateProximity()
-            updateIdleTimer()
-            if oldValue == .game || latencyMode == .game { applyIOBufferPreference() }
-        }
-    }
     /// Ask the Mac not to take the headphones back while this phone listens (and to resume
     /// playback if moving them paused it).
     @Published var keepHeadphones: Bool {
         didSet {
             defaults.set(keepHeadphones, forKey: Key.keepHeadphones)
-            receiver.holdHeadphones = keepHeadphones
+            manager.holdHeadphones = keepHeadphones
             diag("keep headphones on iPhone: \(keepHeadphones)")
         }
     }
@@ -184,10 +206,12 @@ final class AppModel: ObservableObject {
         guard let i = s.lastIndex(of: ":"), let p = UInt16(s[s.index(after: i)...]) else { return nil }
         return (String(s[..<i]), p)
     }
-    var isActive: Bool { state.isActive }
+    /// At least one source is connecting, connected or reconnecting.
+    var isActive: Bool { manager.isActive }
 
     let playback = PlaybackEngine()
-    private let receiver: Receiver
+    private let manager: SourceManager
+    private var runtimes: [String: SourceRuntime] = [:]
     private let defaults = UserDefaults.standard
     private var browser: NWBrowser?
     private var pauseTask: Task<Void, Never>?
@@ -196,50 +220,74 @@ final class AppModel: ObservableObject {
     /// too: macOS automatic switching lets any of the user's Macs take the AirPods when it plays.
     private var otherMacHoldTimer: Timer?
     private var otherMacConnections: [String: NWConnection] = [:]
+    private var lastWantedGameBuffer = false
     private var interruptionTask: Task<Void, Never>?
     /// Paused by an audio interruption that may never end (not a call, not a lost output):
     /// opening the app resumes it.
     private var pausedByInterruption = false
-    /// Bluetooth signal strength to the Mac, for Auto latency.
-    private let proximity = MacProximity()
-    private var proximityRunning = false
     private var rebuildTask: Task<Void, Never>?
-    private var autoConnectPending: String?
+    /// Sources that were on at the last launch and haven't shown up on the network yet.
+    private var autoConnectPending: Set<String> = []
     private var observers: [NSObjectProtocol] = []
 
     init() {
-        receiver = Receiver(sink: playback)
+        manager = SourceManager(bus: playback.bus, store: DefaultsSettingsStore(defaults))
         autoConnect = defaults.object(forKey: Key.autoConnect) as? Bool ?? true
         knownAddresses = defaults.dictionary(forKey: Key.knownAddresses) as? [String: String] ?? [:]
         knownTailscale = defaults.dictionary(forKey: Key.knownTailscale) as? [String: String] ?? [:]
-        latencyMode = defaults.string(forKey: Key.latencyMode).flatMap(LatencyMode.init(rawValue:)) ?? .auto
         keepHeadphones = defaults.object(forKey: Key.keepHeadphones) as? Bool ?? true
-        receiver.latencyMode = latencyMode
-        receiver.holdHeadphones = keepHeadphones
-        receiver.deviceID = UIDevice.current.identifierForVendor?.uuidString
+        manager.holdHeadphones = keepHeadphones
+        manager.deviceID = UIDevice.current.identifierForVendor?.uuidString
         if let data = defaults.data(forKey: Key.manual), let list = try? JSONDecoder().decode([MacEntry].self, from: data) {
             manual = list
         }
-        receiver.onState = { [weak self] st in Task { @MainActor in self?.handleState(st) } }
-        receiver.onMacStatus = { [weak self] flags in
+        migrateSingleSourceSettings()
+        manager.onState = { [weak self] source, st in MainActor.assumeIsolated { self?.handleState(source, st) } }
+        manager.onMacStatus = { [weak self] _, flags in
             guard flags.contains(.lastControlFailed) else { return }
-            Task { @MainActor in self?.controlFailed() }
+            MainActor.assumeIsolated { self?.controlFailed() }
         }
-        receiver.onStats = { [weak self] s in
-            Task { @MainActor in
-                self?.stats = s
-                self?.refreshOutputLatency()
-                self?.updateProximity()
-                self?.syncNowPlayingRate()
-                if s.state.isActive, Self.shouldLogStats(s, paused: self?.paused ?? false) {
-                    let rssi = self?.proximity.rssi.map { String(Int($0)) } ?? "-"
-                    diag("stats atMac=\(s.atMac) near=\(s.phoneNearMac.map(String.init) ?? "-") rssi=\(rssi) active=\(s.macUserActive.map(String.init) ?? "-") input=\(s.macInputRecent.map(String.init) ?? "-") buf=\(s.bufferMs)/\(s.targetMs) loss=\(s.lossPercent)% pps=\(s.packetsPerSecond) under=\(s.underruns) cb=\(s.callbackFrames) gap=\(s.arrivalGapMs) maxgap10s=\(s.maxArrivalGapMs10s) timergap10s=\(s.maxTimerGapMs10s) bg=\(UIApplication.shared.applicationState == .background) primed=\(s.jitterPrimed) resets=\(s.jitterResets) queued=\(s.queuedMs) handoff=\(s.handoffMs) muted=\(self?.playback.muted ?? false) concealed=\(s.concealedFrames) late=\(s.lateFrames) trimmed=\(s.trimmedFrames) stretched=\(s.stretchedFrames) wg=\(s.workgroupStatus.map(String.init) ?? "-") resendAsked=\(s.resendRequested) recovered=\(s.resendRecovered) engine=\(self?.playback.engine.isRunning ?? false)")
-                }
-            }
-        }
+        manager.onStats = { [weak self] source, s in MainActor.assumeIsolated { self?.handleStats(source, s) } }
         diag("launch (build \(Bundle.main.infoDictionary?["CFBundleVersion"] ?? "?"))")
         configureAudioSession()
         observeAudioSession()
+        installLifecycleObservers()
+        setupRemoteCommands()
+        otherMacHoldTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.holdOnOtherMacs() }
+        }
+        calls.onChange = { [weak self] inCall in self?.callChanged(inCall) }
+        startBrowsing()
+        if autoConnect {
+            for id in manager.settings.enabled {
+                if let m = manual.first(where: { $0.id == id }) {
+                    connect(m)
+                } else if let m = rememberedAway.first(where: { $0.id == id }) {
+                    // Known address: connect right away (works at home and over a VPN); no need to
+                    // wait for Bonjour, which doesn't cross VPNs.
+                    connect(m)
+                } else {
+                    autoConnectPending.insert(id)
+                }
+            }
+        }
+    }
+
+    private func handleStats(_ source: Source, _ s: Receiver.Stats) {
+        refreshSources()
+        refreshOutputLatency()
+        updateProximity(for: source)
+        syncNowPlayingRate()
+        guard let rt = runtimes[source.id], s.state.isActive, shouldLogStats(s, rt) else { return }
+        let rssi = rt.proximity.rssi.map { String(Int($0)) } ?? "-"
+        var line = "stats atMac=\(s.atMac) near=\(s.phoneNearMac.map(String.init) ?? "-") rssi=\(rssi) active=\(s.macUserActive.map(String.init) ?? "-") input=\(s.macInputRecent.map(String.init) ?? "-") buf=\(s.bufferMs)/\(s.targetMs) loss=\(s.lossPercent)% pps=\(s.packetsPerSecond) under=\(s.underruns) cb=\(s.callbackFrames) gap=\(s.arrivalGapMs) maxgap10s=\(s.maxArrivalGapMs10s) timergap10s=\(s.maxTimerGapMs10s) bg=\(UIApplication.shared.applicationState == .background) primed=\(s.jitterPrimed) resets=\(s.jitterResets) queued=\(s.queuedMs) handoff=\(s.handoffMs) muted=\(playback.muted) concealed=\(s.concealedFrames) late=\(s.lateFrames) trimmed=\(s.trimmedFrames) stretched=\(s.stretchedFrames) wg=\(s.workgroupStatus.map(String.init) ?? "-") resendAsked=\(s.resendRequested) recovered=\(s.resendRecovered) engine=\(playback.engine.isRunning)"
+        // Only when set: with one source at its defaults the line is what it always was.
+        if source.config.volume != 1 { line += " vol=\(String(format: "%.2f", source.config.volume))" }
+        if source.config.muted { line += " srcmuted=true" }
+        sdiag(source, line)
+    }
+
+    private func installLifecycleObservers() {
         let nc = NotificationCenter.default
         for (name, label) in [(UIApplication.didEnterBackgroundNotification, "background"),
                               (UIApplication.willEnterForegroundNotification, "foreground"),
@@ -252,40 +300,38 @@ final class AppModel: ObservableObject {
                 diag("app \(label)")
                 MainActor.assumeIsolated {
                     self?.updateIdleTimer()
-                    if label == "locked" { self?.receiver.screenLocked = true }
-                    if label == "unlocked" { self?.receiver.screenLocked = false }
+                    if label == "locked" { self?.manager.screenLocked = true }
+                    if label == "unlocked" { self?.manager.screenLocked = false }
                     if label == "locked" || label == "unlocked", self?.isActive == true {
                         // How fast the output pulled audio around the lock (12000 per entry = real time).
                         DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
-                            guard let self else { return }
-                            diag("render per 250 ms around \(label): \(self.receiver.renderHistory())")
+                            MainActor.assumeIsolated {
+                                guard let self else { return }
+                                for s in self.manager.sources {
+                                    self.sdiag(s, "render per 250 ms around \(label): \(s.receiver.renderHistory())")
+                                }
+                            }
                         }
                     }
                 }
                 if label == "foreground" { Task { @MainActor in self?.cameToForeground() } }
             })
         }
-        setupRemoteCommands()
-        otherMacHoldTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.holdOnOtherMacs() }
-        }
-        calls.onChange = { [weak self] inCall in self?.callChanged(inCall) }
-        startBrowsing()
-        if autoConnect, let last = defaults.string(forKey: Key.lastMac) {
-            if let m = manual.first(where: { $0.id == last }) {
-                connect(m)
-            } else if let m = rememberedAway.first(where: { $0.id == last }) {
-                // Known address: connect right away (works at home and over a VPN); no need to
-                // wait for Bonjour, which doesn't cross VPNs.
-                connect(m)
-            } else {
-                autoConnectPending = last
-            }
+    }
+
+    /// First launch of the several-sources version: the one Mac and the one global latency mode
+    /// from before become that Mac's entry in the set and its latency.
+    private func migrateSingleSourceSettings() {
+        guard manager.settings.isEmpty, let last = defaults.string(forKey: Key.lastMac) else { return }
+        manager.settings.enable(last)
+        if let old = defaults.string(forKey: Key.legacyLatencyMode).flatMap(LatencyMode.init(rawValue:)), old != .auto {
+            manager.settings.update(last) { $0.latency = old }
         }
     }
 
     // MARK: - Connect / disconnect
 
+    /// Turn a source on: connect to it, alongside any others already playing.
     func connect(_ requested: MacEntry) {
         let mac = discovered.first(where: { $0.id == requested.id })
             ?? rememberedAway.first(where: { $0.id == requested.id })
@@ -302,16 +348,14 @@ final class AppModel: ObservableObject {
     /// Debug builds only: `-pairingCode 1234` as a launch argument (or HALLTONE_PAIRING_CODE in the
     /// environment) stands in for the Keychain, for automated Simulator runs. Compiled out of Release.
     /// Per-second stats in Debug builds; every 10 s in Release to keep the log small.
-    private static var statsCounter = 0
-    private static var lastLoggedUnderruns: UInt64 = 0
     /// Every 10 s while healthy; every second while packets are short or playback underruns, so
     /// trouble is logged in detail but the file still covers hours (at 1/s it covered ~40 min).
-    private static func shouldLogStats(_ s: Receiver.Stats, paused: Bool) -> Bool {
-        statsCounter += 1
+    private func shouldLogStats(_ s: Receiver.Stats, _ rt: SourceRuntime) -> Bool {
+        rt.statsCounter += 1
         let subscribed = if case .subscribed = s.state { true } else { false }
-        let troubled = !subscribed || (!paused && (s.underruns != lastLoggedUnderruns || s.packetsPerSecond < 90))
-        lastLoggedUnderruns = s.underruns
-        return troubled || statsCounter % 10 == 1
+        let troubled = !subscribed || (!paused && (s.underruns != rt.lastLoggedUnderruns || s.packetsPerSecond < 90))
+        rt.lastLoggedUnderruns = s.underruns
+        return troubled || rt.statsCounter % 10 == 1
     }
 
     /// URL of the diagnostics log, for the in-app share button.
@@ -326,6 +370,15 @@ final class AppModel: ObservableObject {
         #endif
     }
 
+    /// Set once a second source joins, until the next session starts from none.
+    private var namedLogging = false
+
+    /// A diagnostics line about one source. Once several sources are in play it starts with the
+    /// source's name (with one source, lines are what they always were).
+    private func sdiag(_ source: Source, _ message: String) {
+        diag(namedLogging ? "[\(source.name)] \(message)" : message)
+    }
+
     func submitPairingCode() {
         guard let mac = pairingPrompt, let code = UInt32(pairingInput.trimmingCharacters(in: .whitespaces)) else {
             pairingError = "Enter the 4-digit code shown in the Halltone menu on your Mac."
@@ -336,41 +389,55 @@ final class AppModel: ObservableObject {
         connect(mac, code: code)
     }
 
-    private var connectedID: String?
-    private var connectedHost: String?
-    /// Where full diagnostics logs go (the connected Mac), and the code it accepts them with.
-    private var connectedLogHost: String?
-    private var connectedCode: UInt32?
-    /// The other address (LAN or Tailscale) to try if this one stops getting through.
-    private var connectedAlternate: String?
-    private var fallbackTask: Task<Void, Never>?
+    /// The pairing prompt was cancelled: a source waiting for its code isn't left half on.
+    func cancelPairing() {
+        if let mac = pairingPrompt, let s = manager.source(id: mac.id), !s.isActive { turnOff(mac.id) }
+        pairingPrompt = nil
+    }
 
     private func connect(_ mac: MacEntry, code: UInt32) {
-        connectedID = mac.id
-        connectedCode = code
-        connectedLogHost = mac.preferredHost ?? (mac.kind == .manual ? mac.host : nil)
-        connectedHost = mac.preferredHost
-        connectedAlternate = mac.alternateHost
-        fallbackTask?.cancel()
-        diag("connect → \(mac.name) via \(mac.preferredHost ?? (mac.kind == .manual ? mac.host : "Bonjour"))")
+        guard !manager.isFull || manager.source(id: mac.id) != nil else {
+            errorText = "Halltone can play up to \(MixBus.maxChannels) sources at once. Turn one off first."
+            return
+        }
+        let rt = runtimes[mac.id] ?? SourceRuntime(mac: mac, code: code)
+        runtimes[mac.id] = rt
+        rt.mac = mac
+        rt.code = code
+        rt.logHost = mac.preferredHost ?? (mac.kind == .manual ? mac.host : nil)
+        rt.host = mac.preferredHost
+        rt.alternate = mac.alternateHost
+        rt.fallbackTask?.cancel()
+        // The first source (nothing else playing) starts from a clean slate, as connecting always did.
+        let others = manager.sources.contains { $0.id != mac.id && $0.isActive }
+        if manager.sources.isEmpty { namedLogging = false }
+        if manager.sources.contains(where: { $0.id != mac.id }) { namedLogging = true }
+        let via = mac.preferredHost ?? (mac.kind == .manual ? mac.host : "Bonjour")
+        diag(namedLogging ? "[\(mac.name)] connect → \(mac.name) via \(via)" : "connect → \(mac.name) via \(via)")
         selected = mac
         defaults.set(mac.id, forKey: Key.lastMac)
-        autoConnectPending = nil
-        paused = false
-        receiver.listening = true
-        pauseTask?.cancel()
-        interruptionTask?.cancel()
-        pausedByInterruption = false
-        // A previous session may have ended muted (headphones away, interruption); a muted
-        // engine never reads the hand-off ring, so the new stream would never start playing.
-        playback.muted = calls.inCall
+        autoConnectPending.remove(mac.id)
+        if !others {
+            paused = false
+            manager.listening = true
+            pauseTask?.cancel()
+            interruptionTask?.cancel()
+            pausedByInterruption = false
+            // A previous session may have ended muted (headphones away, interruption); a muted
+            // engine never reads the hand-off rings, so the new stream would never start playing.
+            playback.muted = calls.inCall
+        }
         configureAudioSession()
+        lastWantedGameBuffer = wantsGameBuffer
         activateAudioSession()
-        receiver.connect(to: mac.endpoint, pairingCode: code, deviceName: UIDevice.current.name)
-        updateNowPlaying(macName: mac.name)
+        manager.connect(id: mac.id, name: mac.name, endpoint: mac.endpoint, pairingCode: code,
+                        deviceName: UIDevice.current.name)
+        refreshSources()
+        updateNowPlaying()
         updateIdleTimer()
     }
 
+    /// The Disconnect button: every source stops. The set that comes back at launch is kept.
     func disconnect() {
         diag("disconnect requested")
         allowSharedOutput = false
@@ -378,15 +445,56 @@ final class AppModel: ObservableObject {
         interruptionTask?.cancel()
         pausedByInterruption = false
         paused = false
-        receiver.disconnect()
+        for rt in runtimes.values { rt.fallbackTask?.cancel() }
+        manager.disconnectAll()
+        endSession()
+    }
+
+    /// A source's switch turned off: stop it and don't bring it back at launch.
+    func turnOff(_ id: String) {
+        guard let s = manager.source(id: id) else { manager.settings.disable(id); return }
+        sdiag(s, "turned off")
+        runtimes[id]?.fallbackTask?.cancel()
+        stopProximity(for: id)
+        manager.disconnect(id: id)
+        refreshSources()
+        if !manager.isActive { disconnectedLast() } else { updateNowPlaying(); updateLogTarget() }
+    }
+
+    /// Whether a source's switch shows on: connecting or connected, or waiting for its pairing code.
+    func isOn(_ id: String) -> Bool {
+        manager.source(id: id)?.isActive == true || pairingPrompt?.id == id
+    }
+
+    /// The last source went away through its own switch: same wrap-up as Disconnect.
+    private func disconnectedLast() {
+        allowSharedOutput = false
+        pauseTask?.cancel()
+        interruptionTask?.cancel()
+        pausedByInterruption = false
+        paused = false
+        endSession()
+    }
+
+    private func endSession() {
+        refreshSources()
+        updateLogTarget()
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         configureAudioSession()
     }
 
+    /// The Connect button: bring back the sources that were on, or else the selected (or first) one.
     func toggle() {
-        if isActive { disconnect() } else if let s = selected ?? allMacs.first { connect(s) }
+        if isActive { disconnect(); return }
+        let known = allMacs
+        let wanted = manager.settings.enabled.compactMap { id in known.first { $0.id == id } }
+        if !wanted.isEmpty { wanted.forEach { connect($0) } }
+        else if let s = selected ?? known.first { connect(s) }
     }
+
+    /// Whether the Connect button has something to connect.
+    var canConnect: Bool { selected != nil || !allMacs.isEmpty }
 
     func select(_ mac: MacEntry) { selected = mac }
 
@@ -399,6 +507,8 @@ final class AppModel: ObservableObject {
     }
 
     func removeManual(_ entry: MacEntry) {
+        if manager.source(id: entry.id) != nil { turnOff(entry.id) }
+        manager.settings.forget(entry.id)
         manual.removeAll { $0.id == entry.id }
         persistManual()
         if selected == entry { selected = nil }
@@ -410,40 +520,93 @@ final class AppModel: ObservableObject {
         if let data = try? JSONEncoder().encode(manual) { defaults.set(data, forKey: Key.manual) }
     }
 
-    private func handleState(_ st: Receiver.State) {
-        diag("state: \(st)")
-        state = st
-        if case .reconnecting = st { scheduleAddressFallback() } else { fallbackTask?.cancel() }
-        if !st.isActive { LogShipper.shared.target = nil }
+    // MARK: - Per-source controls
+
+    func setVolume(_ volume: Float, for id: String) {
+        manager.setVolume(volume, for: id)
+        refreshSources()
+    }
+
+    func setMuted(_ muted: Bool, for id: String) {
+        manager.setMuted(muted, for: id)
+        if let s = manager.source(id: id) { sdiag(s, muted ? "muted" : "unmuted") }
+        refreshSources()
+    }
+
+    /// nil = the default for the sender (Auto, or Game for 2.5 ms frames).
+    func setLatency(_ mode: LatencyMode?, for id: String) {
+        manager.setLatency(mode, for: id)
+        if let s = manager.source(id: id) {
+            sdiag(s, "latency mode: \(mode?.rawValue ?? "default (\(s.effectiveMode.rawValue))")")
+            updateProximity(for: s)
+        }
+        refreshSources()
+    }
+
+    /// The config of a source whether or not it's connected.
+    func config(for id: String) -> SourceConfig { manager.settings.config(for: id) }
+
+    private func refreshSources() {
+        let media = manager.mediaSource?.id
+        sources = manager.sources.map {
+            SourceStatus(id: $0.id, name: $0.name, stats: $0.stats, config: $0.config,
+                         effectiveMode: $0.effectiveMode, isMediaSource: $0.id == media)
+        }
+        updateIdleTimer()
+        let wantsGame = wantsGameBuffer
+        if wantsGame != lastWantedGameBuffer {
+            lastWantedGameBuffer = wantsGame
+            applyIOBufferPreference()
+        }
+    }
+
+    private func handleState(_ source: Source, _ st: Receiver.State) {
+        sdiag(source, "state: \(st)")
+        let current = manager.source(id: source.id) === source
+        refreshSources()
+        let rt = runtimes[source.id]
+        if case .reconnecting = st { if current { scheduleAddressFallback(source) } } else { rt?.fallbackTask?.cancel() }
+        updateLogTarget()
+        guard current else { return }
         switch st {
         case .rejected(let why):
-            if let mac = selected {
+            if let mac = rt?.mac {
                 Keychain.delete(for: mac.pairingKey)
                 pairingError = why
                 pairingInput = ""
                 pairingPrompt = mac
             }
         case .failed(let why):
-            errorText = why
-        case .subscribed(let name):
-            updateNowPlaying(macName: name)
-            if let host = connectedHost ?? connectedLogHost, let code = connectedCode {
-                LogShipper.shared.target = .init(host: host, pairingCode: code, deviceName: UIDevice.current.name)
-            }
+            errorText = "\(manager.sources.count > 1 ? "\(source.name): " : "")\(why)"
+        case .subscribed:
+            updateNowPlaying()
         default: break
         }
+        if st == .idle || !st.isActive { stopProximity(for: source.id, ifNotConnected: true) }
+    }
+
+    /// Diagnostics logs go to the Mac we're subscribed to (the media source if there are several).
+    private func updateLogTarget() {
+        let ready = manager.sources.filter { if case .subscribed = $0.state { return true } else { return false } }
+        guard let s = (manager.mediaSource.flatMap { m in ready.first { $0 === m } } ?? ready.first),
+              let rt = runtimes[s.id], let host = rt.host ?? rt.logHost else {
+            LogShipper.shared.target = nil
+            return
+        }
+        LogShipper.shared.target = .init(host: host, pairingCode: rt.code, deviceName: UIDevice.current.name)
     }
 
     /// Still reconnecting after 5 s: the address may be unreachable from this network (LAN address
     /// while away, or Tailscale switched off). Try the other one.
-    private func scheduleAddressFallback() {
-        guard fallbackTask == nil || fallbackTask!.isCancelled, let alt = connectedAlternate,
-              let id = connectedID, var mac = allMacs.first(where: { $0.id == id }) else { return }
-        fallbackTask = Task { [weak self] in
+    private func scheduleAddressFallback(_ source: Source) {
+        guard let rt = runtimes[source.id], rt.fallbackTask == nil || rt.fallbackTask!.isCancelled,
+              let alt = rt.alternate, var mac = allMacs.first(where: { $0.id == source.id }) else { return }
+        rt.fallbackTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(5))
-            guard let self, !Task.isCancelled, case .reconnecting = self.state else { return }
-            let current = self.connectedHost
-            diag("no audio via \(current ?? "?") for 5 s; trying \(alt)")
+            guard let self, !Task.isCancelled, case .reconnecting = source.state,
+                  manager.source(id: source.id) === source else { return }
+            let current = rt.host
+            sdiag(source, "no audio via \(current ?? "?") for 5 s; trying \(alt)")
             mac.preferredHost = alt
             mac.alternateHost = current
             guard let code = Keychain.pairingCode(for: mac.pairingKey) ?? Self.debugPairingCode() else { return }
@@ -501,23 +664,27 @@ final class AppModel: ObservableObject {
         }
         // Left the network the Mac is on while listening (e.g. walked out of Wi-Fi range): switch
         // to its Tailscale address instead of retrying a LAN address that's out of reach.
-        if isActive, let id = connectedID, !entries.contains(where: { $0.id == id }),
-           let away = rememberedAway.first(where: { $0.id == id }), away.viaTailscale,
-           connectedHost != away.preferredHost {
-            diag("\(away.name) left the local network; switching to Tailscale (\(away.preferredHost ?? "?"))")
-            connect(away)
+        for source in manager.sources where source.isActive {
+            guard let rt = runtimes[source.id] else { continue }
+            if !entries.contains(where: { $0.id == source.id }),
+               let away = rememberedAway.first(where: { $0.id == source.id }), away.viaTailscale,
+               rt.host != away.preferredHost {
+                sdiag(source, "\(away.name) left the local network; switching to Tailscale (\(away.preferredHost ?? "?"))")
+                connect(away)
+            }
         }
         if selected == nil { selected = discovered.first ?? rememberedAway.first ?? manual.first }
         // Connected to a remembered address that the Mac no longer advertises (e.g. its DHCP
         // address changed): move to the current one.
-        if isActive, let host = connectedHost, let current = entries.first(where: { $0.id == connectedID }),
-           let fresh = current.preferredHost, fresh != host {
-            diag("\(current.name) moved \(host) → \(fresh); reconnecting")
-            connect(current)
+        for source in manager.sources where source.isActive {
+            if let rt = runtimes[source.id], let host = rt.host, let current = entries.first(where: { $0.id == source.id }),
+               let fresh = current.preferredHost, fresh != host {
+                sdiag(source, "\(current.name) moved \(host) → \(fresh); reconnecting")
+                connect(current)
+            }
         }
-        if let pending = autoConnectPending, let m = discovered.first(where: { $0.id == pending }) {
-            autoConnectPending = nil
-            connect(m)
+        for pending in autoConnectPending {
+            if let m = discovered.first(where: { $0.id == pending }) { connect(m) }
         }
     }
 
@@ -539,7 +706,13 @@ final class AppModel: ObservableObject {
 
     /// 5 ms normally; 2.5 ms (128 frames at 48 kHz) in Game mode. iOS decides what it grants
     /// (the route matters: Bluetooth ignores it); `logGrantedIOBuffer` records the result.
-    private var preferredIOBufferDuration: TimeInterval { latencyMode == .game ? 0.0025 : 0.005 }
+    private var preferredIOBufferDuration: TimeInterval { wantsGameBuffer ? 0.0025 : 0.005 }
+
+    /// Any source plays in Game mode (by its frames, or because it was set to Game).
+    private var wantsGameBuffer: Bool {
+        manager.sources.contains { $0.effectiveMode == .game }
+            || manager.settings.enabled.contains { manager.settings.config(for: $0).latency == .game }
+    }
 
     private func logGrantedIOBuffer(_ why: String) {
         let s = AVAudioSession.sharedInstance()
@@ -566,7 +739,7 @@ final class AppModel: ObservableObject {
     /// Game mode keeps the screen on while the app is in front and playing: locking the phone
     /// makes iOS deepen its output buffer (100+ ms), which is the delay Game mode removes.
     private func updateIdleTimer() {
-        let keepAwake = latencyMode == .game && isActive && !paused
+        let keepAwake = manager.sources.contains { $0.isActive && $0.effectiveMode == .game } && !paused
             && UIApplication.shared.applicationState == .active
         if UIApplication.shared.isIdleTimerDisabled != keepAwake {
             UIApplication.shared.isIdleTimerDisabled = keepAwake
@@ -709,21 +882,36 @@ final class AppModel: ObservableObject {
         resume()
     }
 
-    /// Bluetooth proximity runs only in Auto mode while connected to a Mac.
-    private func updateProximity() {
-        let want = latencyMode == .auto && stats.state.isActive && !stats.macName.isEmpty
+    /// Bluetooth proximity runs per source, only while it plays in Auto mode and is connected.
+    private func updateProximity(for source: Source) {
+        guard let rt = runtimes[source.id] else { return }
+        let stats = source.stats
+        let live = manager.source(id: source.id) === source
+        let want = live && source.effectiveMode == .auto && stats.state.isActive && !stats.macName.isEmpty
         if want {
-            if !proximityRunning {
-                proximityRunning = true
-                proximity.onChange = { [weak self] near in self?.receiver.phoneNearMac = near }
+            if !rt.proximityRunning {
+                rt.proximityRunning = true
+                rt.proximity.onChange = { [weak source] near in source?.receiver.phoneNearMac = near }
+                let name = source.name
+                rt.proximity.prefix = { [weak self] in
+                    MainActor.assumeIsolated { self?.namedLogging == true ? "[\(name)] " : "" }
+                }
             }
-            proximity.start(macName: stats.macName)
-            proximity.calibrating = stats.macInputRecent == true
-        } else if proximityRunning {
-            proximityRunning = false
-            proximity.stop()
-            receiver.phoneNearMac = nil
+            rt.proximity.start(macName: stats.macName)
+            rt.proximity.calibrating = stats.macInputRecent == true
+        } else if rt.proximityRunning {
+            rt.proximityRunning = false
+            rt.proximity.stop()
+            source.receiver.phoneNearMac = nil
         }
+    }
+
+    private func stopProximity(for id: String, ifNotConnected: Bool = false) {
+        guard let rt = runtimes[id], rt.proximityRunning else { return }
+        if ifNotConnected, manager.source(id: id)?.isActive == true { return }
+        rt.proximityRunning = false
+        rt.proximity.stop()
+        manager.source(id: id)?.receiver.phoneNearMac = nil
     }
 
     private func pauseForMissingHeadphones() {
@@ -740,7 +928,7 @@ final class AppModel: ObservableObject {
     private func pause(reason: String, grace: TimeInterval = 60, recoverFromInterruption: Bool = false) {
         diag("\(reason); pausing (subscription kept for \(Int(grace)) s)")
         paused = true
-        receiver.listening = false
+        manager.listening = false
         playback.muted = true
         pauseTask?.cancel()
         pauseTask = Task { [weak self] in
@@ -777,7 +965,7 @@ final class AppModel: ObservableObject {
 
     private func holdOnOtherMacs() {
         let want = keepHeadphones && isActive && !paused
-        let others = discovered.filter { $0.id != connectedID && $0.preferredHost != nil }
+        let others = discovered.filter { manager.source(id: $0.id) == nil && $0.preferredHost != nil }
         guard want, !others.isEmpty else {
             for c in otherMacConnections.values { c.cancel() }
             otherMacConnections.removeAll()
@@ -827,7 +1015,7 @@ final class AppModel: ObservableObject {
         interruptionTask?.cancel()
         pausedByInterruption = false
         paused = false
-        receiver.listening = true
+        manager.listening = true
         playback.muted = calls.inCall
         configureAudioSession()
         if isActive { rebuildEngine(reason: "resume") }
@@ -880,7 +1068,13 @@ final class AppModel: ObservableObject {
 
     private func remote(_ cmd: ControlCommand) -> MPRemoteCommandHandlerStatus {
         guard isActive else { return .noActionableNowPlayingItem }
-        diag("remote command: \(cmd)")
+        // Play/pause/next/previous go to the media source: the one whose STATUS says controls work
+        // (the one that most recently started playing if several do). The rest are never targeted.
+        guard let target = manager.mediaSource else {
+            diag("remote command: \(cmd): no source has working controls; ignoring")
+            return .noActionableNowPlayingItem
+        }
+        diag(namedLogging ? "remote command: \(cmd) → \(target.name)" : "remote command: \(cmd)")
         if cmd != .pause, cmd != .next, cmd != .previous,
            Date().timeIntervalSince(sharedOutputAt) < 5 || (paused && !Self.outputIsPersonal) {
             // The car's automatic "play" as CarPlay connects (or any play while we're paused on
@@ -892,6 +1086,7 @@ final class AppModel: ObservableObject {
         // Pause never brings Halltone back: iOS sends it when AirPods come out, and resuming then
         // played through the phone's speaker.
         if paused, cmd != .pause { resume() }
+        let stats = target.stats
         if cmd == .pause, stats.macExplicitPlayPause {
             // iOS sends "pause" for two different things. Halltone is always outputting audio
             // (silence while the video is paused), so iOS thinks it's playing and turns every
@@ -899,7 +1094,7 @@ final class AppModel: ObservableObject {
             // out also sends "pause". While the Mac plays, both mean pause.
             if stats.macPlaying {
                 pendingPress?.cancel(); pendingPress = nil
-                receiver.sendControl(.pause)
+                target.receiver.sendControl(.pause)
                 return .success
             }
             // Mac paused: a press means play, taking them out means nothing. Each earbud coming
@@ -919,13 +1114,13 @@ final class AppModel: ObservableObject {
                 let since = at.addingTimeInterval(-0.5)
                 let removed = self.outputGoneAt >= since || self.sharedOutputAt >= since || !Self.outputIsPersonal
                 diag(removed ? "pause with headphones removed: nothing to do" : "pause from a headphone press: play")
-                if !removed { self.receiver.sendControl(.play) }
+                if !removed { target.receiver.sendControl(.play) }
             }
             return .success
         }
         // An older Mac only knows the toggle.
         let sent: ControlCommand = (cmd == .pause || cmd == .play) && !stats.macExplicitPlayPause ? .playPause : cmd
-        receiver.sendControl(sent)
+        target.receiver.sendControl(sent)
         return .success
     }
 
@@ -952,27 +1147,45 @@ final class AppModel: ObservableObject {
         nowPlayingRestore = Task { [weak self] in
             try? await Task.sleep(for: .seconds(10))
             guard !Task.isCancelled, let self else { return }
-            self.updateNowPlaying(macName: self.stats.macName.isEmpty ? (self.selected?.name ?? "Mac") : self.stats.macName)
+            self.updateNowPlaying()
         }
     }
 
     func dismissControlsHelpBanner() { showControlsHelpBanner = false }
 
-    private func updateNowPlaying(macName: String) {
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = [
-            MPMediaItemPropertyTitle: "Halltone",
-            MPMediaItemPropertyArtist: macName,
-            MPNowPlayingInfoPropertyIsLiveStream: true,
-            MPNowPlayingInfoPropertyPlaybackRate: stats.macPlaying ? 1.0 : 0.0,
-        ]
-        nowPlayingRate = stats.macPlaying
+    /// Which Mac the "how to turn on headphone controls" help is about: one whose controls are off.
+    var controlsHelpName: String {
+        let s = sources.first { $0.stats.macControlsAvailable == false } ?? sources.first
+        return s.map { $0.stats.macName.isEmpty ? $0.name : $0.stats.macName } ?? "your Mac"
     }
 
-    /// Mirror whether the Mac is playing on the lock screen: iOS picks play vs pause for a
+    /// What the lock screen shows: the media source (its name, and whether it is playing). With no
+    /// media source, every connected source's name, playing if any of them is.
+    private var nowPlayingState: (artist: String, playing: Bool)? {
+        func name(_ s: Source) -> String { s.stats.macName.isEmpty ? s.name : s.stats.macName }
+        let live = manager.sources.filter { $0.isActive }
+        guard !live.isEmpty else { return nil }
+        if let m = manager.mediaSource { return (name(m), m.stats.macPlaying) }
+        return (live.map(name).joined(separator: ", "), live.contains { $0.stats.macPlaying })
+    }
+
+    private func updateNowPlaying() {
+        guard let now = nowPlayingState else { return }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = [
+            MPMediaItemPropertyTitle: "Halltone",
+            MPMediaItemPropertyArtist: now.artist,
+            MPNowPlayingInfoPropertyIsLiveStream: true,
+            MPNowPlayingInfoPropertyPlaybackRate: now.playing ? 1.0 : 0.0,
+        ]
+        nowPlayingShown = now
+    }
+
+    /// Mirror whether the media source is playing on the lock screen: iOS picks play vs pause for a
     /// headphone press from it, and explicit pause/play only act when they'd change something.
-    private var nowPlayingRate = true
+    private var nowPlayingShown: (artist: String, playing: Bool)?
     private func syncNowPlayingRate() {
-        guard stats.state.isActive, stats.macPlaying != nowPlayingRate, !stats.macName.isEmpty else { return }
-        updateNowPlaying(macName: stats.macName)
+        guard let now = nowPlayingState, !now.artist.isEmpty,
+              now.playing != nowPlayingShown?.playing || now.artist != nowPlayingShown?.artist else { return }
+        updateNowPlaying()
     }
 }
