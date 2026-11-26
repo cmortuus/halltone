@@ -70,6 +70,7 @@ import HalltoneDialogEval
 
     static func videoSpeech(dir: String) throws -> String? {
         guard let mix = makeDemoMix(lines: [videoLine, videoLine], gaps: [0.3], leadIn: 0.2, tail: 0.2, musicGain: 0, speechOverMusicDB: 9) else { return nil }
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let path = dir + "/video.wav"
         try WAV.write16(path: path, sampleRate: 48_000, channels: 2, samples: mix.samples)
         return path
