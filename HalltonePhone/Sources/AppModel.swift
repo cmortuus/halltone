@@ -689,6 +689,9 @@ final class AppModel: ObservableObject {
 
     /// Headphones of some kind: AirPods/Bluetooth, wired, USB. Not CarPlay, AirPlay or speakers.
     private static var outputIsPersonal: Bool {
+        #if DEBUG
+        if DebugSettings.allowSpeakerOutput { return true } // latency tests: the phone's speaker counts
+        #endif
         let personal: Set<AVAudioSession.Port> = [.bluetoothA2DP, .bluetoothHFP, .bluetoothLE, .headphones, .usbAudio]
         return AVAudioSession.sharedInstance().currentRoute.outputs.contains { personal.contains($0.portType) }
     }

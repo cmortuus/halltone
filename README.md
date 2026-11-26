@@ -61,7 +61,7 @@ The Mac only captures audio while a subscriber is alive.
 | `Packages/HalltoneDialog` | Standalone SwiftPM package (no Apple frameworks; macOS + Linux): real-time **dialog detector** for 48 kHz stereo game audio (center extraction + vendored libfvad + level/band/modulation gates + hysteresis), and the `halltone-dialog-eval` tool. See its [README](Packages/HalltoneDialog/README.md). |
 | `HalltoneMac` | macOS menu bar app (SwiftUI `MenuBarExtra`). |
 | `HalltonePhone` | iOS app. |
-| `Tools/halltone-cli` | macOS test tool: capture to WAV, loopback sender/receiver, impairment simulation, latency report. |
+| `Tools/halltone-cli` | macOS test tool: capture to WAV, loopback sender/receiver, impairment simulation, latency report, acoustic end-to-end latency (`measure`). |
 | `project.yml` | XcodeGen spec → `xcodegen generate` → `Halltone.xcodeproj`. |
 
 ## Build from source
@@ -261,6 +261,44 @@ iOS output = 40–55 ms. The status screen shows each part.
 For the real Mac → iPhone path, the phone's status screen shows buffer depth and an estimated
 latency (buffer + hand-off ring + ~20 ms output), which is the rough check the spec asks for.
 
+### Measuring real end-to-end latency (`measure`)
+
+The estimates above only count buffers. `halltone-cli measure` times the whole path with a
+microphone: it plays a train of short chirps ("clicks", 20 at 500 ms by default) through the Mac's
+default output, the Halltone Mac app captures them and streams them to the phone, and the CLI
+records a Mac input while you hold the phone's sound source against it. It cross-correlates each
+click against the recording and reports min, median and p95 delay and how many clicks it found.
+
+```bash
+$CLI measure --loopback                       # self-test, no hardware: recovers a known delay to ±1 ms
+$CLI measure --list-devices                   # names for --input
+$CLI measure                                  # 20 clicks, built-in mic
+$CLI measure --input "USB Mic" --clicks 40 --interval 700 --wav rec.wav
+```
+
+On the real phone:
+
+1. Run a **Debug** build of the phone app (Release builds have no speaker mode), open the settings
+   list and turn on **Allow speaker output (latency tests)**. Without it the phone pauses as soon as
+   the output is a speaker. Alternatively use a wired earbud or AirPod instead of the speaker.
+2. Connect the phone to the Mac app and let it play (the Mac only captures while a phone listens).
+   Pick the latency mode to test (Auto, Lowest, ...).
+3. Hold the phone's speaker (or the earbud) a few cm from the Mac's built-in mic, in a quiet room.
+   Raise the phone volume to a clear level; the clicks are 8 ms chirps.
+4. Run `$CLI measure` (allow Microphone for your terminal the first time). It plays for about
+   `1.5 s + clicks × interval + 2 s`.
+
+The delay is measured from when each click is scheduled on the Mac's output (what a video player
+does when it hands audio to Core Audio) to when the mic hears it, with the input device's reported
+latency subtracted. If **Mute while streaming** is off, the Mac's own speakers also play the click:
+the CLI sees that earlier arrival (median `direct`), ignores it and reports the second one, and
+also prints how far the phone is behind the Mac's speakers, which is what you'd notice with a video
+on the Mac. Delays must stay below `--interval`; use a larger one in Stable mode or on cellular.
+The absolute number can be off by a few ms (output device and mic latency are only estimates), so
+compare runs on the same setup; `--input-offset-ms` shifts it if you calibrate against something
+known. `--wav` keeps the recording for a look in an audio editor; `--level` sets the click volume
+and `--threshold` the minimum correlation (0-1) to count as a click.
+
 ## Notes for maintainers
 
 - Both audio callbacks (the tap IOProc on the Mac and the source node render block on the phone)
@@ -273,7 +311,9 @@ latency (buffer + hand-off ring + ~20 ms output), which is the rough check the s
 - Logs: `log stream --predicate 'subsystem == "com.halltone"'`.
 - Debug-only hooks (compiled out of Release): the `-pairingCode` launch argument /
   `HALLTONE_PAIRING_CODE` for automated Simulator runs. `-logShipBytes N` lowers the phone's
-  log-upload size for testing.
+  log-upload size for testing. **Allow speaker output (latency tests)** (`DebugSettings.swift`, a
+  Debug-only row at the end of the settings list) makes the phone treat its speaker as personal
+  audio so it doesn't pause, for `halltone-cli measure`.
 
 ### Diagnostics
 
