@@ -1,5 +1,6 @@
 import Foundation
 import HalltoneCore
+import HalltoneSenderCore
 #if canImport(os)
 import os
 #endif
