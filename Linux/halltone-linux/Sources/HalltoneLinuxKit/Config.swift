@@ -36,6 +36,36 @@ public struct DialogPauseSettings: Equatable {
     }
 }
 
+/// `media` in the config file: which MPRIS player phone controls and REMOTE_CONTROL act on.
+public struct MediaSettings: Equatable {
+    /// Pins the player: a substring of its bus name or identity (`firefox`). nil: any.
+    public var player: String?
+    /// Players never touched (a game that registers MPRIS, say).
+    public var ignore: [String] = []
+    public init() {}
+
+    static func resolve(file raw: Any?, flags: Flags) throws -> MediaSettings {
+        var s = MediaSettings()
+        if let raw {
+            guard let d = raw as? [String: Any] else { throw ConfigError("config.json: \"media\" must be an object") }
+            if let v = d["player"] {
+                guard let t = v as? String else { throw ConfigError("config.json: media.player must be a string") }
+                s.player = t
+            }
+            if let v = d["ignore"] {
+                guard let a = v as? [String] else { throw ConfigError("config.json: media.ignore must be a list of strings") }
+                s.ignore = a
+            }
+        }
+        if let p = flags.mediaPlayer { s.player = p }
+        if let i = flags.mediaIgnore { s.ignore = i.split(separator: ",").map { String($0) } }
+        s.player = s.player?.trimmingCharacters(in: .whitespaces)
+        if s.player?.isEmpty == true { s.player = nil }
+        s.ignore = s.ignore.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        return s
+    }
+}
+
 public struct ConfigError: Error, CustomStringConvertible {
     public let description: String
     init(_ d: String) { description = d }
@@ -61,6 +91,10 @@ public struct Flags: Equatable {
     public var dialogMinMs: String?
     public var dialogResumeMs: String?
     public var controlSocket: String?
+    public var mediaPlayer: String?
+    /// Comma-separated.
+    public var mediaIgnore: String?
+    public var noRemoteControl = false
     public var help = false
     public var version = false
 
@@ -88,6 +122,9 @@ public struct Flags: Equatable {
       --dialog-min-ms <n>  Dialog must last this long before pausing (default 600)
       --dialog-resume-ms <n>  Resume this long after the dialog's last speech (default 1500)
       --control-socket <path>  Unix socket for `halltone-linux dialog on|off|status`
+      --media-player <text>  Pin the MPRIS player (substring of its name, e.g. firefox; media.player)
+      --media-ignore <a,b> Never control these players (media.ignore)
+      --no-remote-control  Don't let paired devices pause this PC (allowRemoteControl: false)
       --config <path>      Config file (default ~/.config/halltone/config.json)
       --simulate-loss <p>  Test hook: drop this fraction (0-1) of outgoing audio packets
       --simulate-jitter-ms <ms>  Test hook: delay outgoing audio by up to this many ms
@@ -96,6 +133,11 @@ public struct Flags: Equatable {
     Subcommand (talks to the running halltone-linux; SIGUSR1 toggles the same switch):
 
       halltone-linux dialog on|off|status [--socket <path>]
+
+    Subcommands (talk to MPRIS directly; they honor --config, --media-player, --media-ignore):
+
+      halltone-linux players                  List MPRIS players and their status
+      halltone-linux media pause|play|toggle|next|previous|status
     """
 
     public static func parse(_ args: [String]) throws -> Flags {
@@ -132,6 +174,9 @@ public struct Flags: Equatable {
             case "--dialog-min-ms": f.dialogMinMs = try value(arg, inline)
             case "--dialog-resume-ms": f.dialogResumeMs = try value(arg, inline)
             case "--control-socket": f.controlSocket = try value(arg, inline)
+            case "--media-player": f.mediaPlayer = try value(arg, inline)
+            case "--media-ignore": f.mediaIgnore = try value(arg, inline)
+            case "--no-remote-control": f.noRemoteControl = true
             case "--no-advertise": f.noAdvertise = true
             case "--help", "-h": f.help = true
             case "--version": f.version = true
@@ -157,6 +202,9 @@ public struct LinuxConfig: Equatable {
     public var simulatedJitterMs: Double
     public var dialogPause = DialogPauseSettings()
     public var controlSocket: String?
+    public var media = MediaSettings()
+    /// "Let paired devices pause playback" (REMOTE_CONTROL target); config `allowRemoteControl`.
+    public var allowRemoteControl = true
 
     public static let defaultPulseDevice = "@DEFAULT_MONITOR@"
     public static let pairingCodeRange: ClosedRange<UInt32> = 1000...9999
@@ -270,6 +318,12 @@ public struct LinuxConfig: Equatable {
                                  advertise: advertise, simulatedLoss: loss, simulatedJitterMs: jitter)
         config.dialogPause = try resolveDialogPause(file: file["dialogPause"], flags: flags)
         config.controlSocket = flags.controlSocket
+        config.media = try MediaSettings.resolve(file: file["media"], flags: flags)
+        if let v = file["allowRemoteControl"] {
+            guard let b = v as? Bool else { throw ConfigError("config.json: \"allowRemoteControl\" must be true or false") }
+            config.allowRemoteControl = b
+        }
+        if flags.noRemoteControl { config.allowRemoteControl = false }
         return config
     }
 

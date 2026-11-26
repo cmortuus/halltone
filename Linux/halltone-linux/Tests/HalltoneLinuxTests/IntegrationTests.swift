@@ -87,9 +87,8 @@ import Glibc
                 payload.withUnsafeBytes { raw in
                     if decoder.decode(raw, into: &pcm) { for i in 0..<120 { left.append(pcm[2 * i]) } }
                 }
-            case .status(let flags):
-                statusSeen = true
-                #expect(!flags.contains(.controlsAvailable)) // no media keys on Linux
+            case .status:
+                statusSeen = true // controlsAvailable depends on the MPRIS players on this machine
             default: break
             }
         }

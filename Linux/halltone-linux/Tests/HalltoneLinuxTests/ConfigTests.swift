@@ -125,3 +125,36 @@ import HalltoneCore
         #expect(ConfigStore.defaultPath(environment: ["HOME": "/home/u", "XDG_CONFIG_HOME": "/x"]) == "/x/halltone/config.json")
     }
 }
+
+@Suite struct MediaConfigTests {
+    private func resolve(_ file: [String: Any] = [:], _ tweak: (inout Flags) -> Void = { _ in }) throws -> LinuxConfig {
+        var flags = Flags(); flags.pairingCode = "4321"; tweak(&flags)
+        return try LinuxConfig.resolve(file: file, flags: flags, hostname: "h")
+    }
+
+    @Test func defaultsAllowEverythingAndPinNothing() throws {
+        let c = try resolve()
+        #expect(c.media.player == nil)
+        #expect(c.media.ignore.isEmpty)
+        #expect(c.allowRemoteControl)
+    }
+
+    @Test func fileAndFlagsSetPinIgnoreAndRemoteControl() throws {
+        var c = try resolve(["media": ["player": " firefox ", "ignore": ["steam", " "]], "allowRemoteControl": false])
+        #expect(c.media.player == "firefox")
+        #expect(c.media.ignore == ["steam"])
+        #expect(!c.allowRemoteControl)
+        c = try resolve(["media": ["player": "firefox"]]) { $0.mediaPlayer = "mpv"; $0.mediaIgnore = "a, b" }
+        #expect(c.media.player == "mpv")
+        #expect(c.media.ignore == ["a", "b"])
+        c = try resolve { $0.noRemoteControl = true }
+        #expect(!c.allowRemoteControl)
+        #expect(try Flags.parse(["--media-player", "vlc", "--media-ignore=x,y", "--no-remote-control"]).mediaIgnore == "x,y")
+    }
+
+    @Test func badTypesAreRejected() {
+        #expect(throws: ConfigError.self) { try resolve(["media": "firefox"]) }
+        #expect(throws: ConfigError.self) { try resolve(["media": ["ignore": "steam"]]) }
+        #expect(throws: ConfigError.self) { try resolve(["allowRemoteControl": "yes"]) }
+    }
+}
