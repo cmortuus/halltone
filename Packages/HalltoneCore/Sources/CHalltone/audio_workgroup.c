@@ -2,6 +2,7 @@
 // so the OS schedules it like the IO thread: when the screen locks and the app is backgrounded it
 // isn't deprioritized long enough to let a small playback buffer run dry. Apple marks the
 // workgroup API unavailable in Swift, hence C.
+#ifdef __APPLE__
 #include "CHalltone.h"
 #include <AudioToolbox/AudioToolbox.h>
 #include <os/workgroup.h>
@@ -50,3 +51,5 @@ void es_wg_leave(es_wg_membership *m) {
     m->workgroup = NULL;
     m->joined = 0;
 }
+
+#endif // __APPLE__

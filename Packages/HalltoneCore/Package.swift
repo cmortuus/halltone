@@ -1,19 +1,39 @@
 // swift-tools-version: 5.10
 import PackageDescription
 
+// HalltoneSender / HalltoneReceiver need Apple frameworks (CoreAudio, AVFoundation, Network), so
+// they exist only when the manifest is evaluated on an Apple host. On Linux the package is the
+// portable core: wire format, codecs, jitter buffer, ring buffer.
+#if os(Linux)
+let isApple = false
+#else
+let isApple = true
+#endif
+
+let appleProducts: [Product] = isApple ? [
+    .library(name: "HalltoneSender", targets: ["HalltoneSender"]),
+    .library(name: "HalltoneReceiver", targets: ["HalltoneReceiver"]),
+] : []
+
+let appleTargets: [Target] = isApple ? [
+    // macOS-only: process-tap capture, UDP listener, subscriber tracking.
+    .target(name: "HalltoneSender", dependencies: ["HalltoneCore", "CHalltone"]),
+    // macOS + iOS: UDP subscriber, jitter-buffer feed, AVAudioEngine playback.
+    .target(name: "HalltoneReceiver", dependencies: ["HalltoneCore", "CHalltone"]),
+] : []
+
 let package = Package(
     name: "HalltoneCore",
     platforms: [.macOS("14.2"), .iOS(.v17)],
     products: [
         .library(name: "HalltoneCore", targets: ["HalltoneCore"]),
-        .library(name: "HalltoneSender", targets: ["HalltoneSender"]),
-        .library(name: "HalltoneReceiver", targets: ["HalltoneReceiver"]),
-    ],
+    ] + appleProducts,
     targets: [
         // Tiny C target: lock-free SPSC ring buffer (stdatomic), usable from both audio callbacks.
+        // audio_workgroup.c (Apple only) needs AudioToolbox; elsewhere there is nothing to link.
         .target(name: "CHalltone", path: "Sources/CHalltone",
-                linkerSettings: [.linkedFramework("AudioToolbox")]),
-        // Vendored libopus 1.5.2 (float build, no platform intrinsics), compiled for macOS and iOS.
+                linkerSettings: [.linkedFramework("AudioToolbox", .when(platforms: [.macOS, .iOS]))]),
+        // Vendored libopus 1.5.2 (float build, no platform intrinsics), compiled for macOS, iOS and Linux.
         .target(
             name: "COpus",
             path: "Sources/COpus",
@@ -37,11 +57,8 @@ let package = Package(
         .target(name: "COpusShim", dependencies: ["COpus"], path: "Sources/COpusShim"),
         // Shared protocol + buffering logic (no audio hardware).
         .target(name: "HalltoneCore", dependencies: ["CHalltone", "COpus", "COpusShim"]),
-        // macOS-only: process-tap capture, UDP listener, subscriber tracking.
-        .target(name: "HalltoneSender", dependencies: ["HalltoneCore", "CHalltone"]),
-        // macOS + iOS: UDP subscriber, jitter-buffer feed, AVAudioEngine playback.
-        .target(name: "HalltoneReceiver", dependencies: ["HalltoneCore", "CHalltone"]),
-        .testTarget(name: "HalltoneCoreTests", dependencies: ["HalltoneCore", "HalltoneReceiver"]),
-    ],
+        .testTarget(name: "HalltoneCoreTests",
+                    dependencies: ["HalltoneCore"] + (isApple ? ["HalltoneReceiver"] : [])),
+    ] + appleTargets,
     swiftLanguageVersions: [.v5]
 )

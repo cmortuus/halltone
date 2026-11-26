@@ -1,3 +1,4 @@
+#if canImport(HalltoneReceiver)
 import Testing
 @testable import HalltoneReceiver
 
@@ -11,3 +12,4 @@ struct ReceiverTests {
         #expect(normal.lost == 5 && normal.received == 100)
     }
 }
+#endif
