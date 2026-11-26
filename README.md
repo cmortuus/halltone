@@ -89,6 +89,17 @@ scripts/test-core.sh                   # unit tests for HalltoneCore
 The iPhone app needs Xcode (`xcodebuild -scheme HalltonePhone -destination 'generic/platform=iOS'`
 or Run from the IDE with the phone selected).
 
+**Linux (Ubuntu 24.04):** the portable core (`HalltoneCore`: wire format, codecs, jitter buffer,
+ring, vendored libopus) builds and tests with a Swift 6.x toolchain (e.g. the `swift:6.1-noble`
+image or [swiftly](https://www.swift.org/install/linux/)). `HalltoneSender` / `HalltoneReceiver`
+and the apps are Apple-only and are left out of the package on Linux:
+
+```bash
+cd Packages/HalltoneCore && swift build && swift test
+```
+
+CI (`.github/workflows/ci.yml`) runs this on Ubuntu 24.04 plus `scripts/test-core.sh` on macOS.
+
 ## Setup notes
 
 1. **AirPods automatic switching will fight this.** If the AirPods are paired to both the Mac and
