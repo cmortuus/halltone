@@ -14,7 +14,7 @@ public final class Sender {
         public var port: UInt16 = Constants.defaultPort
         public var codec: CodecID = .pcm16
         /// Game mode: PCM16 in 2.5 ms frames (overrides `codec`). The Mac app also asks the tap
-        /// for its smallest IO buffer.
+        /// for a small (64-frame) IO buffer.
         public var gameMode = false
         /// nil accepts any pairing code.
         public var pairingCode: UInt32?

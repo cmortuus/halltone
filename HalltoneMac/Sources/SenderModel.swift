@@ -47,7 +47,7 @@ final class SenderModel: ObservableObject {
     @Published var codec: CodecID {
         didSet { defaults.set(Int(codec.rawValue), forKey: Key.codec); restart() }
     }
-    /// Game mode: PCM in 2.5 ms frames and the tap's smallest IO buffer, for a phone on the desk
+    /// Game mode: PCM in 2.5 ms frames and a small tap IO buffer (64 frames), for a phone on the desk
     /// next to this Mac (the codec setting is ignored while it's on).
     @Published var gameMode: Bool {
         didSet { defaults.set(gameMode, forKey: Key.gameMode); restart() }
@@ -91,7 +91,7 @@ final class SenderModel: ObservableObject {
         cfg.pairingCode = pairingCode
         cfg.macName = macName
         let mute = muteWhileStreaming
-        let ioFrames = gameMode ? ProcessTapSource.smallestIOBuffer : ProcessTapSource.defaultIOBufferFrames
+        let ioFrames = gameMode ? ProcessTapSource.gameIOBufferFrames : ProcessTapSource.defaultIOBufferFrames
         let s = Sender(config: cfg) {
             ProcessTapSource(muteWhileTapped: mute, excludedProcesses: [getpid()], ioBufferFrames: ioFrames)
         }

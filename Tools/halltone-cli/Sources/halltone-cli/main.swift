@@ -11,7 +11,7 @@ halltone-cli — Halltone test tool
   send [--port 47800] [--source tap|tone] [--codec pcm|opus] [--mute] [--code N]
        [--no-bonjour] [--seconds N] [--sim-loss 0.05] [--sim-jitter 40]
        [--latency-log send.csv] [--swap-every N] [--sim-burst MS [--sim-burst-every MS]]
-       [--game]                            --game: Game mode (PCM, 2.5 ms frames, smallest tap IO buffer)
+       [--game]                            --game: Game mode (PCM, 2.5 ms frames, 64-frame tap IO buffer)
                                            run the sender (capture on demand)
   receive HOST[:PORT] [--code N] [--name X] [--wav out.wav] [--seconds N]
        [--mode auto|lowest|balanced|stable|game] [--latency-log recv.csv]            subscribe; play (default) or write decoded audio to a WAV

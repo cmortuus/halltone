@@ -14,7 +14,7 @@ public final class ToneSource: AudioSource {
     private var running = false
 
     /// Frames written to the ring at a time: 480 by default, 128 to imitate a tap with the
-    /// smallest IO buffer (Game mode).
+    /// small IO buffer (Game mode; the real tap asks for 64).
     public let blockFrames: Int
 
     public init(frequency: Double = 440, amplitude: Float = 0.3, blockFrames: Int = 480) {

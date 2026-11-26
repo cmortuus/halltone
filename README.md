@@ -150,7 +150,7 @@ Mac answers `OK` or `NO <reason>`.
   crossfaded drops/repeats instead of flushing.
 - **Game mode** (phone on the desk next to the computer, app in front, screen on): pick **Game**
   on the phone and turn on **Game mode (lowest latency)** in the Mac menu (PCM in 2.5 ms frames,
-  the tap's smallest IO buffer). 15 ms start, 8–60 ms, gaps covered up to 60 ms, 5 ms margin,
+  a 64-frame tap IO buffer). 15 ms start, 8–60 ms, gaps covered up to 60 ms, 5 ms margin,
   target decays within a few seconds (5 ms every 2 s). Anything longer than the ceiling (Wi‑Fi
   power save, ~100 ms) isn't waited for or added to the target: up to 120 ms of it is concealed
   with a short fade out and fade in, then playback carries on at the same depth, so rare short
@@ -209,11 +209,11 @@ capture IO buffer (~5–10 ms) and the output device latency on top. Measured on
 on a clean link once the target has decayed to 30 ms, ~93 ms with 5% loss and 40 ms jitter.
 
 Game mode on loopback (`send --source tone --codec pcm --game`, then `receive --mode game`, 128-frame
-sink callbacks; the tone source writes 128-frame blocks like a minimal tap IO buffer): the
+sink callbacks; the tone source writes 128-frame blocks, twice the 64-frame tap IO buffer Game asks for): the
 encode → scheduled-at-sink median is about 13–25 ms on a clean link and 24–29 ms with
 `--sim-jitter 10`, against 26–32 ms (clean) and 32–41 ms (`--sim-jitter 10`) for Lowest with 5 ms
 frames. These numbers were taken on a heavily loaded Mac and vary run to run. They leave out the
-capture IO buffer (~3 ms), the render callback and the output device. The path to the headphone
+capture IO buffer (~1.3–3 ms), the render callback and the output device. The path to the headphone
 jack is roughly: 2.5 ms frame + 8–15 ms jitter buffer + ~5 ms hand-off + ~3 ms capture + ~10–20 ms
 iOS output = 40–55 ms. The status screen shows each part.
 

@@ -62,10 +62,12 @@ public final class ProcessTapSource: AudioSource {
     public let autoStart: Bool
 
     /// IO buffer to ask the aggregate for, in frames; clamped to what the device allows.
-    /// `smallestIOBuffer` (Game mode) asks for the minimum.
+    /// Game mode asks for `gameIOBufferFrames`.
     public let ioBufferFrames: UInt32
     public static let defaultIOBufferFrames: UInt32 = 128
-    public static let smallestIOBuffer: UInt32 = 1
+    /// 64 frames (1.3 ms), still clamped to the device range. Not the device minimum (often
+    /// 14-15 frames): that is 3000+ IO callbacks a second for under 1 ms of gain.
+    public static let gameIOBufferFrames: UInt32 = 64
 
     public init(muteWhileTapped: Bool = false, excludedProcesses: [pid_t] = [], tapOnly: Bool = true, autoStart: Bool = true,
                 ioBufferFrames: UInt32 = ProcessTapSource.defaultIOBufferFrames) {

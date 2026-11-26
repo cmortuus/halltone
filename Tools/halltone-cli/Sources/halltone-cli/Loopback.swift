@@ -22,10 +22,10 @@ func runSend(port: UInt16, sourceKind: String, codec: CodecID, mute: Bool, pairi
     cfg.simulatedBurstEveryMs = burstEveryMs
     let latencyWriter = try latencyLog.map { try CSVWriter(url: $0) }
     let sender = Sender(config: cfg) {
-        // Game mode: a tone block the size of the tap's smallest IO buffer; the real tap asks for it.
+        // Game mode: a small tone block like a low-latency tap IO buffer (128 frames; the real tap asks for 64).
         if sourceKind == "tone" { return ToneSource(blockFrames: game ? 128 : 480) }
         return ProcessTapSource(muteWhileTapped: mute, excludedProcesses: [getpid()],
-                                ioBufferFrames: game ? ProcessTapSource.smallestIOBuffer : ProcessTapSource.defaultIOBufferFrames)
+                                ioBufferFrames: game ? ProcessTapSource.gameIOBufferFrames : ProcessTapSource.defaultIOBufferFrames)
     }
     var lastLine = ""
     sender.onStats = { s in
