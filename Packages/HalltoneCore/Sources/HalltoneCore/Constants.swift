@@ -16,6 +16,8 @@ public enum Constants {
 
     /// PCM16 frame: 240 samples (5 ms) * 2 ch * 2 B = 960 B payload.
     public static let pcmFrameSamples = 240
+    /// PCM16 frame in Game mode: 120 samples (2.5 ms) * 2 ch * 2 B = 480 B payload.
+    public static let pcmGameFrameSamples = 120
     /// Opus frame: 480 samples (10 ms).
     public static let opusFrameSamples = 480
 

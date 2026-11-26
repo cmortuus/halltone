@@ -53,10 +53,17 @@ struct MenuView: View {
                 Label("Paused for \(peer)", systemImage: "pause.circle")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Toggle("Game mode (lowest latency)", isOn: $model.gameMode)
+                .help("Uncompressed audio in 2.5 ms packets and a small capture buffer. For an iPhone on the desk next to this Mac with wired or USB-C headphones; pick Game on the iPhone too. Uses about 1.6 Mbps.")
+            if model.gameMode {
+                Text("Uncompressed, 2.5 ms packets (~1.6 Mbps). Choose Game on the iPhone too; wired or USB-C headphones get the full benefit.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Picker("Codec", selection: $model.codec) {
                 Text("Opus (128 kbps)").tag(CodecID.opus)
                 Text("PCM 16-bit (1.5 Mbps)").tag(CodecID.pcm16)
             }
+            .disabled(model.gameMode)
             Toggle("Launch at login", isOn: $model.launchAtLogin)
             Divider()
             HStack {

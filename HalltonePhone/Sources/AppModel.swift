@@ -123,9 +123,16 @@ final class AppModel: ObservableObject {
     @Published private(set) var discovered: [MacEntry] = []
     @Published private(set) var manual: [MacEntry] = []
     @Published private(set) var selected: MacEntry?
-    @Published private(set) var state: Receiver.State = .idle
+    @Published private(set) var state: Receiver.State = .idle {
+        didSet { updateIdleTimer() }
+    }
     @Published private(set) var stats = Receiver.Stats()
-    @Published private(set) var paused = false
+    @Published private(set) var paused = false {
+        didSet { updateIdleTimer() }
+    }
+    /// What the audio session says the output adds after our render callback (hardware and
+    /// output buffer, ms), refreshed with the stats. Bluetooth shows up here as 150+ ms.
+    @Published private(set) var outputLatencyMs = 0
     @Published var autoConnect: Bool { didSet { defaults.set(autoConnect, forKey: Key.autoConnect) } }
     @Published var latencyMode: LatencyMode {
         didSet {
@@ -133,6 +140,8 @@ final class AppModel: ObservableObject {
             receiver.latencyMode = latencyMode
             diag("latency mode: \(latencyMode.rawValue)")
             updateProximity()
+            updateIdleTimer()
+            if oldValue == .game || latencyMode == .game { applyIOBufferPreference() }
         }
     }
     /// Ask the Mac not to take the headphones back while this phone listens (and to resume
@@ -219,6 +228,7 @@ final class AppModel: ObservableObject {
         receiver.onStats = { [weak self] s in
             Task { @MainActor in
                 self?.stats = s
+                self?.refreshOutputLatency()
                 self?.updateProximity()
                 self?.syncNowPlayingRate()
                 if s.state.isActive, Self.shouldLogStats(s, paused: self?.paused ?? false) {
@@ -233,12 +243,15 @@ final class AppModel: ObservableObject {
         let nc = NotificationCenter.default
         for (name, label) in [(UIApplication.didEnterBackgroundNotification, "background"),
                               (UIApplication.willEnterForegroundNotification, "foreground"),
+                              (UIApplication.didBecomeActiveNotification, "active"),
+                              (UIApplication.willResignActiveNotification, "inactive"),
                               (UIApplication.willTerminateNotification, "terminate"),
                               (UIApplication.protectedDataWillBecomeUnavailableNotification, "locked"),
                               (UIApplication.protectedDataDidBecomeAvailableNotification, "unlocked")] {
             observers.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 diag("app \(label)")
                 MainActor.assumeIsolated {
+                    self?.updateIdleTimer()
                     if label == "locked" { self?.receiver.screenLocked = true }
                     if label == "unlocked" { self?.receiver.screenLocked = false }
                     if label == "locked" || label == "unlocked", self?.isActive == true {
@@ -355,7 +368,7 @@ final class AppModel: ObservableObject {
         activateAudioSession()
         receiver.connect(to: mac.endpoint, pairingCode: code, deviceName: UIDevice.current.name)
         updateNowPlaying(macName: mac.name)
-        UIApplication.shared.isIdleTimerDisabled = false
+        updateIdleTimer()
     }
 
     func disconnect() {
@@ -518,9 +531,46 @@ final class AppModel: ObservableObject {
         do {
             try s.setCategory(.playback, mode: .default, options: mixable ? [.mixWithOthers] : [])
             try s.setPreferredSampleRate(Constants.sampleRate)
-            try s.setPreferredIOBufferDuration(0.005)
+            try s.setPreferredIOBufferDuration(preferredIOBufferDuration)
         } catch {
             log.error("audio session config: \(error)")
+        }
+    }
+
+    /// 5 ms normally; 2.5 ms (128 frames at 48 kHz) in Game mode. iOS decides what it grants
+    /// (the route matters: Bluetooth ignores it); `logGrantedIOBuffer` records the result.
+    private var preferredIOBufferDuration: TimeInterval { latencyMode == .game ? 0.0025 : 0.005 }
+
+    private func logGrantedIOBuffer(_ why: String) {
+        let s = AVAudioSession.sharedInstance()
+        diag("IO buffer (\(why)): asked \(String(format: "%.2f", preferredIOBufferDuration * 1000)) ms, granted \(String(format: "%.2f", s.ioBufferDuration * 1000)) ms, output latency \(String(format: "%.1f", s.outputLatency * 1000)) ms, route \(s.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ","))")
+    }
+
+    /// Entering or leaving Game mode while connected: ask the session again and log what comes
+    /// back (it can take a moment to apply).
+    private func applyIOBufferPreference() {
+        guard isActive else { return }
+        do { try AVAudioSession.sharedInstance().setPreferredIOBufferDuration(preferredIOBufferDuration) }
+        catch { diag("IO buffer request failed: \(error.localizedDescription)") }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            MainActor.assumeIsolated { self?.logGrantedIOBuffer("mode change") }
+        }
+    }
+
+    private func refreshOutputLatency() {
+        let s = AVAudioSession.sharedInstance()
+        let ms = Int(((s.outputLatency + s.ioBufferDuration) * 1000).rounded())
+        if ms != outputLatencyMs { outputLatencyMs = ms }
+    }
+
+    /// Game mode keeps the screen on while the app is in front and playing: locking the phone
+    /// makes iOS deepen its output buffer (100+ ms), which is the delay Game mode removes.
+    private func updateIdleTimer() {
+        let keepAwake = latencyMode == .game && isActive && !paused
+            && UIApplication.shared.applicationState == .active
+        if UIApplication.shared.isIdleTimerDisabled != keepAwake {
+            UIApplication.shared.isIdleTimerDisabled = keepAwake
+            diag("screen kept awake: \(keepAwake)")
         }
     }
 
@@ -528,6 +578,7 @@ final class AppModel: ObservableObject {
     private func activateAudioSession() -> Bool {
         do {
             try AVAudioSession.sharedInstance().setActive(true)
+            logGrantedIOBuffer("activated")
             return true
         } catch {
             diag("session activate failed: \(error.localizedDescription)")

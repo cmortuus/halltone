@@ -32,6 +32,17 @@ public final class JitterBuffer {
         public var maxConcealMs: Double = 300
         /// Raise target by this much on an underrun.
         public var raiseStepMs: Double = 20
+        /// Packets that arrive after their play time (3 in a second) raise the target. Off in
+        /// Game mode, where the packets that follow a concealed gap arrive "late" by design.
+        public var raiseOnLate = true
+        /// The decode pump keeps at least this much decoded ahead of the render callback (0 = just
+        /// one callback plus one frame), and may grow that slack by up to `maxExtraDecodedAheadMs`
+        /// when the render side runs dry while packets are queued (the pump was late).
+        public var minDecodedAheadMs: Double = 20
+        public var maxExtraDecodedAheadMs: Double = 100
+        /// Give back one frame of that slack after this many seconds without a render underrun
+        /// (0 = keep it for the session). Game mode only: its slack costs latency directly.
+        public var extraDecodedAheadDecaySeconds: Double = 0
         /// Lower target by this much after `lowerAfterSeconds` without an underrun.
         public var lowerStepMs: Double = 5
         public var lowerAfterSeconds: TimeInterval = 10
@@ -169,7 +180,11 @@ public final class JitterBuffer {
 
     // MARK: - Output
 
-    public func pull(playoutAhead: Int, now: TimeInterval) -> Pull {
+    /// `concealBelow`: with `concealGaps`, an empty queue is concealed only while the decoded
+    /// hand-off holds less than this many samples (about one render callback). Above it there is
+    /// still audio to play, so wait for the packet: concealing early (the pump keeps more than
+    /// a callback decoded ahead) would run ahead of the stream and turn every arrival late.
+    public func pull(playoutAhead: Int, now: TimeInterval, concealBelow: Int = .max) -> Pull {
         guard hasExpected else { return .wait }
         let frame = UInt64(config.frameSamples)
         let span = bufferedSpan()
@@ -187,7 +202,7 @@ public final class JitterBuffer {
             }
         }
 
-        if queue.isEmpty, config.concealGaps,
+        if queue.isEmpty, config.concealGaps, playoutAhead < concealBelow,
            Double(concealedRun) < config.maxConcealMs * config.sampleRate / 1000 {
             let pos = expectedPos
             expectedPos += frame
@@ -321,7 +336,7 @@ public final class JitterBuffer {
     private func noteLate(now: TimeInterval) {
         if now - lateWindowStart > 1 { lateWindowStart = now; lateInWindow = 0 }
         lateInWindow += 1
-        if lateInWindow >= 3, now - lastRaiseTime >= 0.5 {
+        if config.raiseOnLate, lateInWindow >= 3, now - lastRaiseTime >= 0.5 {
             setTarget(ms: stats.targetMs + config.raiseStepMs)
             lastRaiseTime = now
             lastUnderrunTime = now
@@ -428,6 +443,11 @@ public enum LatencyMode: String, CaseIterable, Codable {
     /// Big buffer that rides out Wi-Fi access-point handoffs, dead spots and a locked phone's
     /// Wi-Fi blackouts without dropouts.
     case stable
+    /// Phone on the desk next to the computer, app in the foreground and screen on, wired or
+    /// USB-C headphones: about 15 ms of jitter buffer, 2.5 ms frames (Mac "Game mode"). Rare short
+    /// fades instead of a bigger buffer when Wi-Fi hiccups; Bluetooth headphones add their own
+    /// 150-250 ms on top.
+    case game
 }
 
 extension JitterBuffer.Config {
@@ -448,6 +468,28 @@ extension JitterBuffer.Config {
             c.catchUpMarginMs = 40
         case .balanced:
             break
+        case .game:
+            // Numbers from the loopback/JitterSim measurements in the PR. Gaps up to the 60 ms
+            // ceiling still grow the target (to gap + margin); anything longer (Wi-Fi power
+            // save, ~100 ms) is ignored and concealed with a short fade out and in instead.
+            c.initialTargetMs = 15
+            c.minTargetMs = 8
+            c.maxTargetMs = 60
+            c.gapMarginMs = 5
+            c.gapHalfLifeSeconds = 6
+            c.raiseStepMs = 5
+            c.lowerStepMs = 5
+            c.lowerAfterSeconds = 2
+            c.driftToleranceMs = 5
+            c.minAdjustInterval = 0.25
+            c.catchUpMarginMs = 20
+            c.catchUpInterval = 0.02
+            c.concealGaps = true
+            c.maxConcealMs = 120
+            c.raiseOnLate = false
+            c.minDecodedAheadMs = 0
+            c.maxExtraDecodedAheadMs = 40
+            c.extraDecodedAheadDecaySeconds = 3
         case .stable:
             c.initialTargetMs = 300
             c.minTargetMs = 250

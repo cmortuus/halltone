@@ -7,7 +7,7 @@ Mac, put the phone in your pocket, and keep listening on your AirPods (or any he
 phone) anywhere your Wi‑Fi reaches. Bluetooth drops out a few rooms from the Mac; the phone in
 your pocket doesn't.
 
-- About 100 ms of latency on a good network, plus your headphones' own delay
+- About 100 ms of latency on a good network (Game mode: 40–55 ms), plus your headphones' own delay
 - Reconnects by itself after Wi‑Fi dead spots, keeps playing with the screen locked
 - Opus or uncompressed audio; play/pause and skip on the Mac from the lock screen
 - Local network only: no accounts, no cloud, no data collection ([privacy policy](PRIVACY.md))
@@ -145,7 +145,8 @@ type, seq (u32), session (u32). Types:
 | REMOTE_CONTROL 0x21 | paired device → Mac | `pairing code u32, command u8, request id u32, peer name`. Command 1 = pause for peer, 2 = resume for peer. The sender needn't be subscribed. Retry with the same request id every 300 ms until the ACK arrives |
 | REMOTE_CONTROL_ACK 0x22 | Mac → peer | `request id u32, result u8`: 1 paused, 2 notPlaying, 3 resumed, 4 resumeSkipped (the user changed something), 5 failed, 6 badPairingCode, 7 disabled |
 
-Codecs: 1 = PCM16 interleaved stereo (240-sample / 5 ms frames, ~1.5 Mbps); 2 = Opus 48 kHz stereo
+Codecs: 1 = PCM16 interleaved stereo (240-sample / 5 ms frames, ~1.5 Mbps; Game mode on the Mac
+sends 120-sample / 2.5 ms frames, ~1.6 Mbps, and says so in `SUBSCRIBE_ACK.frameSamples`); 2 = Opus 48 kHz stereo
 (480-sample / 10 ms frames, 128 kbps VBR, restricted-low-delay, in-band FEC flag on).
 
 The Mac replies from whichever of its addresses the phone sent to (`IPV6_PKTINFO` in,
@@ -184,6 +185,21 @@ the Mac then answers `disabled`.
   40 ms start, 20–250 ms, no gap concealment (it sounded worse than waiting). Stable: 300 ms
   start, 250–1500 ms. Cellular: 400 ms start, 300–2000 ms. Mode changes retune the depth with
   crossfaded drops/repeats instead of flushing.
+- **Game mode** (phone on the desk next to the computer, app in front, screen on): pick **Game**
+  on the phone and turn on **Game mode (lowest latency)** in the Mac menu (PCM in 2.5 ms frames,
+  a 64-frame tap IO buffer). 15 ms start, 8–60 ms, gaps covered up to 60 ms, 5 ms margin,
+  target decays within a few seconds (5 ms every 2 s). Anything longer than the ceiling (Wi‑Fi
+  power save, ~100 ms) isn't waited for or added to the target: up to 120 ms of it is concealed
+  with a short fade out and fade in, then playback carries on at the same depth, so rare short
+  fades replace a bigger buffer. Packets that arrive "late" because of that don't raise the
+  target. The decode pump keeps one render callback plus a frame decoded ahead (about 5 ms
+  instead of 20), growing the slack by a frame per render underrun (up to 40 ms, shrinking again
+  after 3 s without one). The phone asks iOS for a 2.5 ms IO buffer (128 frames; the granted
+  value is in the diagnostics log) and keeps the screen on while Game mode is playing in the
+  foreground: locking it makes iOS deepen its output buffer by 100+ ms. Bluetooth headphones add
+  150–250 ms of their own; the Output row of the status screen shows what iOS reports. The Mac
+  and phone settings are independent: Game on the phone with a normal Mac still works (just
+  5–10 ms frames), and a Game Mac with another phone mode just sends 2.5 ms frames.
 - **Jitter buffer** slotted by `samplePos`: handles reorder and duplicates. The target follows the
   recent peak arrival gap plus a margin. Underruns raise it only when the queue was actually
   empty, and gaps longer than the ceiling are ignored, so a single blackout can't ratchet it up.
@@ -232,6 +248,15 @@ $CLI remote 127.0.0.1 --code 1234 resume
 The latency report measures encode → scheduled-at-sink inside one Mac (same clock). Add the
 capture IO buffer (~5–10 ms) and the output device latency on top. Measured on loopback: ~55 ms
 on a clean link once the target has decayed to 30 ms, ~93 ms with 5% loss and 40 ms jitter.
+
+Game mode on loopback (`send --source tone --codec pcm --game`, then `receive --mode game`, 128-frame
+sink callbacks; the tone source writes 128-frame blocks, twice the 64-frame tap IO buffer Game asks for): the
+encode → scheduled-at-sink median is about 13–25 ms on a clean link and 24–29 ms with
+`--sim-jitter 10`, against 26–32 ms (clean) and 32–41 ms (`--sim-jitter 10`) for Lowest with 5 ms
+frames. These numbers were taken on a heavily loaded Mac and vary run to run. They leave out the
+capture IO buffer (~1.3–3 ms), the render callback and the output device. The path to the headphone
+jack is roughly: 2.5 ms frame + 8–15 ms jitter buffer + ~5 ms hand-off + ~3 ms capture + ~10–20 ms
+iOS output = 40–55 ms. The status screen shows each part.
 
 For the real Mac → iPhone path, the phone's status screen shows buffer depth and an estimated
 latency (buffer + hand-off ring + ~20 ms output), which is the rough check the spec asks for.

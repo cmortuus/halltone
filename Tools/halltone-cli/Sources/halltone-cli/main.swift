@@ -11,9 +11,10 @@ halltone-cli — Halltone test tool
   send [--port 47800] [--source tap|tone] [--codec pcm|opus] [--mute] [--code N]
        [--no-bonjour] [--seconds N] [--sim-loss 0.05] [--sim-jitter 40]
        [--latency-log send.csv] [--swap-every N] [--sim-burst MS [--sim-burst-every MS]]
-                                           run the sender (capture on demand)
+       [--game]                            run the sender (capture on demand); --game: Game mode (PCM,
+                                           2.5 ms frames, 64-frame tap IO buffer)
   receive HOST[:PORT] [--code N] [--name X] [--wav out.wav] [--seconds N]
-       [--latency-log recv.csv]            subscribe; play (default) or write decoded audio to a WAV
+       [--mode auto|lowest|balanced|stable|game] [--latency-log recv.csv]            subscribe; play (default) or write decoded audio to a WAV
   latency send.csv recv.csv                report loopback latency from the two logs
   remote HOST[:PORT] --code N [--name X] [--timeout S] pause|resume
                                            ask the Mac to pause/resume playback (REMOTE_CONTROL) and
@@ -70,17 +71,20 @@ do {
         let swapEvery = option("--swap-every").flatMap { Double($0) }
         let burst = Double(option("--sim-burst", default: "0")!) ?? 0
         let burstEvery = Double(option("--sim-burst-every", default: "2000")!) ?? 2000
+        let game = flag("--game")
         try runSend(port: port, sourceKind: source, codec: codec, mute: mute, pairingCode: code, advertise: !noBonjour,
                     seconds: seconds, simLoss: simLoss, simJitterMs: simJitter, latencyLog: latencyLog, swapEvery: swapEvery,
-                    burstMs: burst, burstEveryMs: burstEvery)
+                    burstMs: burst, burstEveryMs: burstEvery, game: game)
     case "receive":
         let code = UInt32(option("--code", default: "0")!) ?? 0
         let name = option("--name", default: "halltone-cli")!
         let wav = option("--wav").map { URL(fileURLWithPath: $0) }
         let seconds = option("--seconds").flatMap { Double($0) }
         let latencyLog = option("--latency-log").map { URL(fileURLWithPath: $0) }
+        let modeName = option("--mode", default: "auto")!
+        guard let mode = LatencyMode(rawValue: modeName) else { print("unknown --mode \(modeName)"); print(usage); exit(2) }
         guard let target = args.first else { print(usage); exit(2) }
-        try runReceive(target: target, pairingCode: code, name: name, wav: wav, seconds: seconds, latencyLog: latencyLog)
+        try runReceive(target: target, pairingCode: code, name: name, wav: wav, seconds: seconds, latencyLog: latencyLog, mode: mode)
     case "remote":
         let code = UInt32(option("--code", default: "0")!) ?? 0
         let name = option("--name", default: "halltone-cli")!

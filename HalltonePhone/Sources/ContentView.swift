@@ -60,7 +60,11 @@ struct ContentView: View {
                         }
                         LabeledContent("Buffer", value: "\(model.stats.bufferMs) / \(model.stats.targetMs) ms")
                         LabeledContent("Packet loss", value: String(format: "%.1f%%", model.stats.lossPercent))
-                        LabeledContent("Est. latency", value: "~\(model.stats.estimatedLatencyMs + 20) ms + Bluetooth")
+                        LabeledContent("Est. latency", value: "~\(latencyTotalMs) ms")
+                        LabeledContent("  Frame", value: String(format: "%.1f ms", model.stats.frameMs))
+                        LabeledContent("  Jitter buffer", value: "\(jitterBufferMs) ms")
+                        LabeledContent("  Hand-off ring", value: "\(model.stats.handoffMs) ms")
+                        LabeledContent("  Output", value: "\(model.outputLatencyMs) ms")
                         LabeledContent("Bitrate", value: "\(model.stats.kilobitsPerSecond) kbps")
                         LabeledContent("Underruns", value: "\(model.stats.underruns)")
                     }
@@ -92,6 +96,7 @@ struct ContentView: View {
                         Text("Lowest").tag(LatencyMode.lowest)
                         Text("Balanced").tag(LatencyMode.balanced)
                         Text("Stable").tag(LatencyMode.stable)
+                        Text("Game").tag(LatencyMode.game)
                     }
                     .pickerStyle(.segmented)
                 } header: {
@@ -178,8 +183,18 @@ struct ContentView: View {
         case .lowest: return "Closest to real time, for watching video on the Mac. Uses only as much delay as your Wi‑Fi needs to play smoothly."
         case .balanced: return "Adapts to your Wi‑Fi: no more delay than it needs to avoid dropouts."
         case .stable: return "About a third of a second behind, but rides out moving between Wi‑Fi access points and weak spots. Best for music and podcasts while you move around."
+        case .game: return "For playing games with this iPhone on the desk next to your computer: about 40–55 ms before your headphones. Turn on Game mode in Halltone on the Mac too, keep this app open (the screen stays on), and use wired or USB‑C headphones: Bluetooth headphones add about 150–250 ms of their own. Rare short audio fades on weak Wi‑Fi instead of extra delay."
         }
     }
+
+    /// Whole-path estimate from the Mac's encode to the headphones (not counting the headphones'
+    /// own delay, or the Mac's capture buffer): frame + jitter buffer + hand-off ring + output.
+    private var latencyTotalMs: Int {
+        Int((model.stats.frameMs + Double(model.stats.bufferMs + model.outputLatencyMs)).rounded())
+    }
+
+    /// `bufferMs` is the whole playout depth (jitter buffer plus the decoded hand-off ring).
+    private var jitterBufferMs: Int { max(0, model.stats.bufferMs - model.stats.handoffMs) }
 
     private var stateText: String {
         switch model.state {

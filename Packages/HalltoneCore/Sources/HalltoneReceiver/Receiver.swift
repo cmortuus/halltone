@@ -70,6 +70,8 @@ public final class Receiver {
         public var jitterResets: UInt64 = 0
         public var queuedMs = 0
         public var handoffMs = 0
+        /// Length of one audio frame from the Mac (2.5 ms in Game mode), in ms.
+        public var frameMs: Double = 0
         /// Decode thread's audio-workgroup join result (0 = joined; nil before the first join).
         public var workgroupStatus: Int?
         /// Retransmission: frames asked for again, and how many of those then arrived in time.
@@ -127,8 +129,9 @@ public final class Receiver {
         newestPos = pos
         let gapFrames = (pos - newest) / frame
         guard gapFrames > 1 else { return }
-        // A hole of more than ~1 s is an outage or a stream jump, not loss worth chasing.
-        guard gapFrames <= 100 else { return }
+        // A hole of more than ~0.5-1 s is an outage or a stream jump, not loss worth chasing
+        // (100 frames, or half a second of 2.5 ms Game-mode frames).
+        guard gapFrames <= max(100, 24_000 / frame) else { return }
         let t = now()
         var ask: [UInt64] = []
         var p = newest + frame
@@ -395,6 +398,7 @@ public final class Receiver {
                 p.start()
                 pump = p
                 stats.codec = codec
+                stats.frameMs = Double(frameSamples) * 1000 / Constants.sampleRate
             }
             stats.macName = macName
             if case .subscribed = state {} else { log.info("subscribed to \(macName, privacy: .public) (\(String(describing: codec), privacy: .public), \(frameSamples) spf)") }
