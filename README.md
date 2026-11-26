@@ -156,15 +156,18 @@ appear (no `avahi-utils`, Avahi stopped, or mDNS blocked on the network) add it 
 If `ufw` is enabled, allow the stream in: `sudo ufw allow 47800/udp` (and `5353/udp` for mDNS).
 
 **Install from the apt repo** (Ubuntu 24.04, amd64 or arm64; no Swift toolchain needed). The `.deb`
-is built in CI (`linux-v*` tags) and imported into a self-hosted apt repo on the LAN. The host
-below is a placeholder that a later reviewer may adjust:
+is built in CI (`linux-v*` tags) and imported into a self-hosted apt repo on the LAN (suite
+`stable`, component `main`). The host is the owner's LAN name and may be adjusted:
 
 ```bash
-sudo curl -fsSL http://apt.lan/halltone/halltone-archive-keyring.gpg -o /usr/share/keyrings/halltone-archive-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/halltone-archive-keyring.gpg] http://apt.lan/halltone noble main" | sudo tee /etc/apt/sources.list.d/halltone.list
+sudo curl -fsSL http://apt.localdomain/halltone/halltone-archive-keyring.gpg -o /usr/share/keyrings/halltone-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/halltone-archive-keyring.gpg] http://apt.localdomain/halltone stable main" | sudo tee /etc/apt/sources.list.d/halltone.list
 sudo apt update && sudo apt install halltone-linux
 systemctl --user daemon-reload && systemctl --user enable --now halltone   # the package doesn't enable it for you
 ```
+
+Signing key fingerprint: `CC98 6414 E18A B806 302D EA35 935D EAC1 4767 7FAF` (armored copy:
+`halltone-archive-keyring.asc` next to the `.gpg`).
 
 The package installs `/usr/bin/halltone-linux` and a user unit; the pairing code is in
 `journalctl --user -u halltone -n 20`. After an upgrade run `systemctl --user restart halltone`.
