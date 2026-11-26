@@ -17,6 +17,10 @@ import Foundation
             .nudge,
             .audio(samplePos: 1 << 40, codec: .pcm16, payload: Data((0..<960).map { UInt8($0 & 0xff) })),
             .control(command: .next),
+            .remoteControl(pairingCode: 4821, command: .pauseForPeer, requestID: 0xCAFE_F00D, peerName: "Gaming PC"),
+            .remoteControl(pairingCode: 4821, command: .resumeForPeer, requestID: 1, peerName: ""),
+            .remoteControlAck(requestID: 0xCAFE_F00D, result: .paused),
+            .remoteControlAck(requestID: 7, result: .disabled),
         ]
         for (i, m) in messages.enumerated() {
             let p = Packet(seq: UInt32(i), session: 0xDEADBEEF, message: m)
@@ -65,6 +69,28 @@ import Foundation
             let n = Int.random(in: 0...64, using: &rng)
             _ = Packet.decode(Data((0..<n).map { _ in UInt8.random(in: 0...255, using: &rng) }))
         }
+    }
+
+    @Test func remoteControlWireLayout() {
+        // Payload after the 12-byte header: code u32, command u8, request id u32, name (u8 len + UTF-8).
+        let req = Packet(seq: 1, session: 2, message: .remoteControl(pairingCode: 0x0102_0304, command: .resumeForPeer,
+                                                                    requestID: 0x0A0B_0C0D, peerName: "PC")).encode()
+        #expect(req[3] == 0x21)
+        #expect(Array(req.dropFirst(Header.size)) == [1, 2, 3, 4, 2, 0x0A, 0x0B, 0x0C, 0x0D, 2, 0x50, 0x43])
+        let ack = Packet(seq: 1, session: 2, message: .remoteControlAck(requestID: 0x0A0B_0C0D, result: .resumeSkipped)).encode()
+        #expect(ack[3] == 0x22)
+        #expect(Array(ack.dropFirst(Header.size)) == [0x0A, 0x0B, 0x0C, 0x0D, 4])
+    }
+
+    @Test func remoteControlRejectsMalformed() {
+        let good = Packet(seq: 1, session: 2, message: .remoteControl(pairingCode: 1, command: .pauseForPeer, requestID: 3, peerName: "pc")).encode()
+        for n in 0..<good.count { #expect(Packet.decode(good.prefix(n)) == nil) } // every truncation
+        var bad = good; bad[Header.size + 4] = 9 // unknown command
+        #expect(Packet.decode(bad) == nil)
+        let ack = Packet(seq: 1, session: 2, message: .remoteControlAck(requestID: 3, result: .paused)).encode()
+        #expect(Packet.decode(ack.prefix(ack.count - 1)) == nil)
+        bad = ack; bad[ack.count - 1] = 0 // unknown result
+        #expect(Packet.decode(bad) == nil)
     }
 
     @Test func longNamesTruncate() {

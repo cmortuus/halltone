@@ -15,6 +15,10 @@ halltone-cli — Halltone test tool
   receive HOST[:PORT] [--code N] [--name X] [--wav out.wav] [--seconds N]
        [--latency-log recv.csv]            subscribe; play (default) or write decoded audio to a WAV
   latency send.csv recv.csv                report loopback latency from the two logs
+  remote HOST[:PORT] --code N [--name X] [--timeout S] pause|resume
+                                           ask the Mac to pause/resume playback (REMOTE_CONTROL) and
+                                           print its answer: paused, notPlaying, resumed,
+                                           resumeSkipped, failed, badPairingCode, disabled
   measure [--clicks 20] [--interval 500] [--input NAME] [--wav rec.wav] [--level 0.5]
        [--threshold 0.3] [--input-offset-ms 0]
                                            real end-to-end latency: play clicks on the Mac, record the phone
@@ -82,6 +86,14 @@ do {
         let latencyLog = option("--latency-log").map { URL(fileURLWithPath: $0) }
         guard let target = args.first else { print(usage); exit(2) }
         try runReceive(target: target, pairingCode: code, name: name, wav: wav, seconds: seconds, latencyLog: latencyLog)
+    case "remote":
+        let code = UInt32(option("--code", default: "0")!) ?? 0
+        let name = option("--name", default: "halltone-cli")!
+        let timeout = Double(option("--timeout", default: "8")!) ?? 8
+        guard args.count == 2, let command = ["pause": RemoteCommand.pauseForPeer, "resume": .resumeForPeer][args[1]] else {
+            print(usage); exit(2)
+        }
+        try runRemote(target: args[0], pairingCode: code, name: name, command: command, timeout: timeout)
     case "latency":
         guard args.count == 2 else { print(usage); exit(2) }
         try reportLatency(send: URL(fileURLWithPath: args[0]), receive: URL(fileURLWithPath: args[1]))
