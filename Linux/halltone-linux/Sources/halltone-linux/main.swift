@@ -18,6 +18,8 @@ case .success(let runtime):
     for sig in [SIGINT, SIGTERM] {
         let s = DispatchSource.makeSignalSource(signal: sig, queue: .global())
         s.setEventHandler {
+            // Never hang on the way out (systemd would wait 90 s before SIGKILL).
+            DispatchQueue.global().asyncAfter(deadline: .now() + 3) { exit(0) }
             runtime.stop()
             exit(0)
         }

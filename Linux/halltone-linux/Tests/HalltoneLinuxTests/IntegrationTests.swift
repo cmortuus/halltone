@@ -8,12 +8,18 @@ import Glibc
 /// End to end: the real `halltone-linux` executable with `--source tone` (no PulseAudio) and a
 /// minimal UDP receiver (TestClient) that subscribes, checks the ACK, decodes the frames and
 /// checks the tone. Runs the same on macOS and on Ubuntu CI.
-@Suite(.serialized) struct IntegrationTests {
+@Suite(.serialized, .timeLimit(.minutes(2))) struct IntegrationTests {
     /// `.build/<config>/halltone-linux`: `swift test` builds the whole package first.
     static var binary: URL {
         let packageRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         return packageRoot.appendingPathComponent(".build/debug/halltone-linux")
+    }
+
+    static func wait(_ p: Process, seconds: Double = 10) {
+        var waited = 0.0
+        while p.isRunning, waited < seconds { Thread.sleep(forTimeInterval: 0.05); waited += 0.05 }
+        if p.isRunning { kill(p.processIdentifier, SIGKILL) }
     }
 
     final class Running {
@@ -47,7 +53,13 @@ import Glibc
         }
 
         func terminate() {
-            if process.isRunning { process.terminate(); process.waitUntilExit() }
+            if process.isRunning {
+                process.terminate()
+                // Poll rather than waitUntilExit(): a wedged child must fail a test, not hang CI.
+                var waited = 0.0
+                while process.isRunning, waited < 5 { Thread.sleep(forTimeInterval: 0.05); waited += 0.05 }
+                if process.isRunning { kill(process.processIdentifier, SIGKILL); FileHandle.standardError.write(Data("halltone-linux did not exit on SIGTERM\n".utf8)) }
+            }
             try? FileManager.default.removeItem(atPath: configDir)
         }
     }
@@ -125,7 +137,9 @@ import Glibc
         kill(run.process.processIdentifier, SIGTERM)
         let sawBye: Bool? = client.receive(timeout: 3, until: { p in if case .bye = p.message { return true } else { return nil } })
         #expect(sawBye == true)
-        run.process.waitUntilExit()
+        var waited = 0.0
+        while run.process.isRunning, waited < 5 { Thread.sleep(forTimeInterval: 0.05); waited += 0.05 }
+        #expect(!run.process.isRunning, "still running 5 s after SIGTERM")
         #expect(run.process.terminationStatus == 0)
     }
 
@@ -148,7 +162,7 @@ import Glibc
         p.standardOutput = out
         p.standardError = FileHandle.nullDevice
         try p.run()
-        defer { if p.isRunning { p.terminate(); p.waitUntilExit() } }
+        defer { if p.isRunning { p.terminate(); Self.wait(p) } }
         // The banner is printed before the sender starts listening.
         var text = ""
         let deadline = Date().addingTimeInterval(5)
@@ -167,13 +181,13 @@ import Glibc
         p.executableURL = Self.binary
         p.arguments = ["--help"]
         p.standardOutput = Pipe()
-        try p.run(); p.waitUntilExit()
+        try p.run(); Self.wait(p)
         #expect(p.terminationStatus == 0)
         let q = Process()
         q.executableURL = Self.binary
         q.arguments = ["--no-such-flag"]
         q.standardError = Pipe()
-        try q.run(); q.waitUntilExit()
+        try q.run(); Self.wait(q)
         #expect(q.terminationStatus == 2)
     }
 }

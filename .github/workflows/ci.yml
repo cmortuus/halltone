@@ -74,7 +74,8 @@ jobs:
         run: swift build -c release && .build/release/halltone-linux --version
       - name: Test (unit + integration with the tone source)
         working-directory: Linux/halltone-linux
-        run: swift test
+        # stdbuf + timeout: if anything wedges, keep the log up to that point and fail fast.
+        run: stdbuf -oL -eL timeout 420 swift test
       - name: Start PulseAudio with a null sink
         run: |
           useradd -m -s /bin/bash ci
@@ -87,7 +88,7 @@ jobs:
         env:
           HALLTONE_PULSE_TEST: "1"
           PULSE_SERVER: unix:/tmp/pulse-ci/native
-        run: swift test --filter PulseTests
+        run: stdbuf -oL -eL timeout 240 swift test --filter PulseTests
       - name: PulseAudio log (on failure)
         if: failure()
         run: cat /tmp/pulse-ci/log || true
