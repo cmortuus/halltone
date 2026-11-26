@@ -1,8 +1,8 @@
 # HalltoneDialog
 
 A real-time **dialog detector**: given 48 kHz stereo game audio (music, effects and speech mixed),
-it reports when characters start and stop talking. The Linux sender will use it to pause a video on
-the Mac during in-game dialog. This package is only the detector and an evaluation tool.
+it reports when characters start and stop talking. `halltone-linux` uses it to pause a video on
+the Mac during in-game dialog (see the main README). This package is only the detector and an evaluation tool.
 
 No Apple frameworks: it builds and tests on macOS and Linux (`swift build && swift test`).
 
@@ -17,6 +17,7 @@ detector.process(samples, frames: n) { event in
     case .ended(let time, let detectedAt): …
     }
 }
+// detector.msSinceSpeech: while active, ms since the last sustained speech frame
 // or: let events = detector.process(samples, frames: n)      // [DialogEvent]; allocates only when an event occurred
 ```
 

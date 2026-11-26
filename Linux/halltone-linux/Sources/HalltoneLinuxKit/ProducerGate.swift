@@ -20,11 +20,13 @@ final class ProducerGate {
     /// Marks this producer abandoned. Waits for a write in progress; none starts afterwards.
     func abandon() { lock.lock(); _abandoned = true; lock.unlock() }
 
-    /// Writes `count` floats unless abandoned; false if abandoned.
-    func write(_ ring: RingBuffer, _ samples: UnsafePointer<Float>, count: Int) -> Bool {
+    /// Writes `count` floats unless abandoned; false if abandoned. `tap` gets a copy under the same
+    /// lock, so it too has a single producer.
+    func write(_ ring: RingBuffer, _ samples: UnsafePointer<Float>, count: Int, tap: DialogTap? = nil) -> Bool {
         lock.lock(); defer { lock.unlock() }
         guard !_abandoned else { return false }
         _ = ring.write(samples, count: count)
+        tap?.push(samples, count: count)
         _writes += 1
         return true
     }

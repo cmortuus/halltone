@@ -33,10 +33,21 @@ for sig in [SIGINT, SIGTERM] {
     signalSources.append(s)
 }
 
+// `halltone-linux dialog on|off|status [--socket path]` talks to the running daemon and exits.
+if CommandLine.arguments.dropFirst().first == "dialog" {
+    exit(App.dialogCommand(Array(CommandLine.arguments.dropFirst(2))))
+}
+
 switch App.start(arguments: Array(CommandLine.arguments.dropFirst())) {
 case .failure(let code):
     exit(code.value)
 case .success(let runtime):
     box.set(runtime)
+    // SIGUSR1: kill switch for dialog pause (`kill -USR1 $(pidof halltone-linux)`).
+    signal(SIGUSR1, SIG_IGN)
+    let usr1 = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: .global())
+    usr1.setEventHandler { _ = runtime.toggleDialog() }
+    usr1.resume()
+    signalSources.append(usr1)
     dispatchMain()
 }
