@@ -109,7 +109,11 @@ public enum SyntheticAudio {
 /// Speech from the platform's TTS (`say` on macOS, `espeak-ng` on Linux). Nothing is bundled:
 /// tests and the demo generator synthesize at run time and skip when no engine exists.
 public enum SpeechSynth {
+    /// `HALLTONE_TTS=/path/to/engine` forces an engine (e.g. espeak-ng on a Mac, to reproduce Linux results).
     public static func enginePath() -> String? {
+        if let forced = ProcessInfo.processInfo.environment["HALLTONE_TTS"], !forced.isEmpty {
+            return FileManager.default.isExecutableFile(atPath: forced) ? forced : nil
+        }
         for p in ["/usr/bin/say", "/usr/bin/espeak-ng", "/usr/local/bin/espeak-ng", "/opt/homebrew/bin/espeak-ng"]
         where FileManager.default.isExecutableFile(atPath: p) { return p }
         return nil
@@ -174,8 +178,15 @@ public struct DemoMix {
 /// Builds a game-like clip: speech lines (panned center) placed at fixed times over wide
 /// music-like noise, with the lines' active ranges as ground-truth labels. Returns nil when no
 /// TTS engine is available.
+///
+/// Speech level: by default each line is scaled so the loudest line peaks at `speechGain`. TTS
+/// engines differ a lot in crest factor (espeak-ng peaks ~7 dB higher than `say` for the same
+/// loudness), so peak scaling gives voice-dependent speech-to-music ratios. Pass
+/// `speechOverMusicDB` to scale every line so its *active RMS* is that many dB above the music's
+/// RMS instead; that makes the level relationship the same for every voice and engine.
 public func makeDemoMix(lines: [String], gaps: [Double], leadIn: Double = 3, tail: Double = 3,
-                        speechGain: Float = 0.5, musicGain: Float = 0.15, voices: [String?] = []) -> DemoMix? {
+                        speechGain: Float = 0.5, musicGain: Float = 0.15, voices: [String?] = [],
+                        speechOverMusicDB: Double? = nil) -> DemoMix? {
     var clips: [[Float]] = []
     for (i, line) in lines.enumerated() {
         guard let c = SpeechSynth.synthesize(line, voice: i < voices.count ? voices[i] : nil) else { return nil }
@@ -183,13 +194,32 @@ public func makeDemoMix(lines: [String], gaps: [Double], leadIn: Double = 3, tai
     }
     var peak: Float = 0.0001
     for c in clips { for v in c { peak = max(peak, abs(v)) } }
-    let norm = speechGain / peak
+    var norm = speechGain / peak
+    var clipNorm = [Float](repeating: 0, count: clips.count)
+    if let snr = speechOverMusicDB {
+        let music = SyntheticAudio.wideMusic(seconds: 20, amplitude: musicGain)
+        var e = 0.0
+        for v in music { e += Double(v) * Double(v) }
+        let musicRMS = (e / Double(music.count)).squareRoot()
+        let target = musicRMS * pow(10, snr / 20)
+        for (i, c) in clips.enumerated() {
+            guard let r = SpeechSynth.activeRange(c) else { continue }
+            var se = 0.0
+            let a = Int(r.start * 48_000), b = min(c.count, Int(r.end * 48_000))
+            for k in a..<b { se += Double(c[k]) * Double(c[k]) }
+            let rms = (se / Double(max(1, b - a))).squareRoot()
+            clipNorm[i] = Float(target / max(rms, 1e-9))
+        }
+    } else {
+        for i in 0..<clips.count { clipNorm[i] = norm }
+    }
+    norm = 0
     var t = leadIn
     var placed: [(Int, [Float])] = []
     var labels: [Label] = []
     for (i, c) in clips.enumerated() {
         guard let r = SpeechSynth.activeRange(c) else { continue }
-        placed.append((Int(t * 48_000), c))
+        placed.append((Int(t * 48_000), c.map { $0 * clipNorm[i] }))
         labels.append(Label(start: t + r.start, end: t + r.end, text: "speech"))
         t += Double(c.count) / 48_000 + (i < gaps.count ? gaps[i] : 1)
     }
@@ -198,7 +228,7 @@ public func makeDemoMix(lines: [String], gaps: [Double], leadIn: Double = 3, tai
     for (off, c) in placed {
         for k in 0..<c.count {
             let idx = 2 * (off + k)
-            if idx + 1 < mix.count { mix[idx] += c[k] * norm; mix[idx + 1] += c[k] * norm }
+            if idx + 1 < mix.count { mix[idx] += c[k]; mix[idx + 1] += c[k] }
         }
     }
     return DemoMix(samples: mix, labels: labels)

@@ -5,6 +5,7 @@ import HalltoneDialogEval
 let usage = """
 usage: halltone-dialog-eval in.wav [--labels labels.txt] [--merge-gap SECONDS]
        halltone-dialog-eval --make-demo out.wav --labels-out labels.txt [--voices a,b,c] [--speech-gain G] [--music-gain G]
+                           [--speech-over-music-db DB]   (scale lines by RMS instead of peak)
                                                                     (needs `say` or `espeak-ng`)
        halltone-dialog-eval --make-signal sine|pink|music out.wav          [--amp A] (30 s non-speech test signal)
 
@@ -45,7 +46,8 @@ if let out = take("--make-demo") {
                  "I knew you would come back, it has been a very long time."]
     let voices: [String?] = (take("--voices") ?? "").split(separator: ",").map { String($0) }
     let speech = Float(number("--speech-gain") ?? 0.5), music = Float(number("--music-gain") ?? 0.15)
-    guard let demo = makeDemoMix(lines: lines, gaps: [4, 5], speechGain: speech, musicGain: music, voices: voices) else { fail("no text-to-speech engine (say / espeak-ng) found") }
+    guard let demo = makeDemoMix(lines: lines, gaps: [4, 5], speechGain: speech, musicGain: music, voices: voices,
+                           speechOverMusicDB: number("--speech-over-music-db")) else { fail("no text-to-speech engine (say / espeak-ng) found") }
     do {
         try WAV.write16(path: out, sampleRate: 48_000, channels: 2, samples: demo.samples)
         try Labels.format(demo.labels).write(toFile: labelsOut, atomically: true, encoding: .utf8)

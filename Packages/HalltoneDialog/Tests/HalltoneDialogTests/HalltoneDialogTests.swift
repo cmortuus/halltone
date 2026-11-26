@@ -142,9 +142,14 @@ final class SpeechTests: XCTestCase {
         "I knew you would come back, it has been a very long time.",
     ]
 
-    private func demo(speechGain: Float, musicGain: Float) throws -> DemoMix {
+    /// `speechOverMusicDB`, when given, scales every line by its *active RMS* relative to the music's
+    /// RMS, so the level relationship is identical for `say` and `espeak-ng` (their peak-to-RMS
+    /// ratios differ by ~7 dB, which made peak-based levels voice-dependent). Otherwise lines are
+    /// scaled so the loudest peaks at `speechGain`.
+    private func demo(speechGain: Float = 0.5, musicGain: Float, speechOverMusicDB: Double? = nil) throws -> DemoMix {
         guard SpeechSynth.isAvailable else { throw XCTSkip("neither `say` nor `espeak-ng` is installed") }
-        return try XCTUnwrap(makeDemoMix(lines: Self.lines, gaps: [4, 5], speechGain: speechGain, musicGain: musicGain))
+        return try XCTUnwrap(makeDemoMix(lines: Self.lines, gaps: [4, 5], speechGain: speechGain, musicGain: musicGain,
+                                         speechOverMusicDB: speechOverMusicDB))
     }
 
     private func check(_ mix: DemoMix, minPrecision: Double, file: StaticString = #filePath, line: UInt = #line) {
@@ -168,16 +173,21 @@ final class SpeechTests: XCTestCase {
     }
 
     func testSpeechOverMusic() throws {
-        check(try demo(speechGain: 0.5, musicGain: 0.15), minPrecision: 0.75)
+        check(try demo(musicGain: 0.15, speechOverMusicDB: 9), minPrecision: 0.75)
     }
 
     func testSpeechAlone() throws {
-        check(try demo(speechGain: 0.5, musicGain: 0), minPrecision: 0.75)
+        check(try demo(musicGain: 0), minPrecision: 0.75)
     }
 
     func testQuietSpeechOverLouderMusic() throws {
-        // Dialog barely above the music's peak level still has to be found: it is centered, the music is wide.
-        check(try demo(speechGain: 0.3, musicGain: 0.25), minPrecision: 0.7)
+        // Dialog only 3 dB above (RMS) loud music must still be found: it is centered, the music is wide.
+        // This is the detector's working limit, deliberately: center extraction over-subtracts side
+        // power (centerSideScale = 2), so dialog at or below the music's level starts to be lost
+        // (measured at 0 dB: recall 93-96 %, line ends held open by music; at -3 dB: 64-87 %).
+        // Game mixes normally duck music well below dialog. The level is set by RMS so the test
+        // means the same thing for `say` and `espeak-ng`.
+        check(try demo(musicGain: 0.25, speechOverMusicDB: 3), minPrecision: 0.7)
     }
 
     func testSpeechBelowLevelGateIsIgnored() throws {
@@ -186,7 +196,7 @@ final class SpeechTests: XCTestCase {
     }
 
     func testSpeechPannedHardLeftIsNotCenter() throws {
-        var mix = try demo(speechGain: 0.5, musicGain: 0)
+        var mix = try demo(musicGain: 0)
         // fold the right channel away: a fully left-panned voice is all side + mid, so it is not "centered"
         for i in 0..<mix.samples.count / 2 { mix.samples[2 * i + 1] = 0 }
         let events = detect(mix.samples)

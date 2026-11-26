@@ -43,6 +43,12 @@ public struct DialogConfig: Equatable, Sendable {
     public var startWindowMs: Int = 400
     /// Dialog ends after this long with no speech.
     public var endSilenceMs: Int = 1200
+    /// While dialog is active, a speech frame only keeps it alive (resets the `endSilenceMs`
+    /// countdown) if at least `holdMinSpeechMs` of speech was seen within the last `holdWindowMs`.
+    /// Without this, one isolated false-positive frame a second — typical of beat-driven music
+    /// whose center briefly pops up — would hold dialog open indefinitely after the line ended.
+    public var holdMinSpeechMs: Int = 50
+    public var holdWindowMs: Int = 200
 
     public init() {}
 
@@ -122,6 +128,11 @@ public final class DialogDetector {
     // hysteresis
     private let ring: UnsafeMutablePointer<UInt8>
     private let ringLen: Int
+    private let holdRing: UnsafeMutablePointer<UInt8>
+    private let holdLen: Int
+    private let holdMinFrames: Int
+    private var holdPos = 0
+    private var holdCount = 0
     private let levelRing: UnsafeMutablePointer<Float>   // 10 ms speech-band level (dB), same length as ring
     private var levelFill = 0
     private let modulationMin: Double
@@ -171,6 +182,10 @@ public final class DialogDetector {
         ringLen = max(1, config.startWindowMs / frameMs)
         ring = .allocate(capacity: ringLen)
         ring.initialize(repeating: 0, count: ringLen)
+        holdLen = max(1, config.holdWindowMs / frameMs)
+        holdMinFrames = max(1, (config.holdMinSpeechMs + frameMs - 1) / frameMs)
+        holdRing = .allocate(capacity: holdLen)
+        holdRing.initialize(repeating: 0, count: holdLen)
         levelRing = .allocate(capacity: ringLen)
         levelRing.initialize(repeating: 0, count: ringLen)
         modulationMin = config.minModulationDB
@@ -197,6 +212,7 @@ public final class DialogDetector {
         pcm.deallocate()
         ring.deallocate()
         levelRing.deallocate()
+        holdRing.deallocate()
     }
 
     /// Forget all audio history and return to "no dialog". Does not emit an `.ended` event.
@@ -212,6 +228,7 @@ public final class DialogDetector {
         hp.z1 = 0; hp.z2 = 0; lp1.z1 = 0; lp1.z2 = 0; lp2.z1 = 0; lp2.z2 = 0
         ring.update(repeating: 0, count: ringLen)
         ringPos = 0; ringCount = 0; levelFill = 0
+        holdRing.update(repeating: 0, count: holdLen); holdPos = 0; holdCount = 0
         frameIndex = 0; sinceSpeech = 0; lastSpeechFrame = -1
         isDialogActive = false
     }
@@ -365,7 +382,14 @@ public final class DialogDetector {
 
         let thisFrame = frameIndex
         frameIndex += 1
-        if speech { lastSpeechFrame = thisFrame }
+        holdCount -= Int(holdRing[holdPos])
+        holdRing[holdPos] = speech ? 1 : 0
+        holdCount += speech ? 1 : 0
+        holdPos += 1
+        if holdPos == holdLen { holdPos = 0 }
+        // a frame only counts toward keeping dialog alive when speech is dense enough around it
+        let sustained = speech && holdCount >= holdMinFrames
+        if sustained { lastSpeechFrame = thisFrame }
 
         if !isDialogActive {
             if ringCount >= startFrames {
@@ -382,7 +406,7 @@ public final class DialogDetector {
                 onEvent(.started(time: Double(max(0, first)) * dt, detectedAt: Double(thisFrame + 1) * dt))
             }
         } else {
-            if speech {
+            if sustained {
                 sinceSpeech = 0
             } else {
                 sinceSpeech += 1
