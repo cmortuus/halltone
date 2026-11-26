@@ -99,6 +99,14 @@ jobs:
           HALLTONE_PULSE_TEST: "1"
           PULSE_SERVER: unix:/tmp/pulse-ci/native
         run: stdbuf -oL -eL timeout 420 swift test --filter PulseTests
+      - name: Test (dialog pause on the same PC - local MPRIS target, no feedback loop; D-Bus + PulseAudio + espeak-ng)
+        working-directory: Linux/halltone-linux
+        env:
+          HALLTONE_DBUS_TEST: "1"
+          HALLTONE_PULSE_TEST: "1"
+          HALLTONE_SHOW_LOG: "1"
+          PULSE_SERVER: unix:/tmp/pulse-ci/native
+        run: dbus-run-session -- stdbuf -oL -eL timeout 300 swift test --filter LocalDialogIntegrationTests
       - name: PulseAudio log (on failure)
         if: failure()
         run: cat /tmp/pulse-ci/log || true

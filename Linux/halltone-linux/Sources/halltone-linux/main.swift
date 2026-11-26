@@ -42,6 +42,9 @@ if CommandLine.arguments.dropFirst().first == "dialog" {
 if CommandLine.arguments.dropFirst().first == "players" {
     exit(App.playersCommand(Array(CommandLine.arguments.dropFirst(2))))
 }
+if CommandLine.arguments.dropFirst().first == "apps" {
+    exit(App.appsCommand(Array(CommandLine.arguments.dropFirst(2))))
+}
 if CommandLine.arguments.dropFirst().first == "media" {
     exit(App.mediaCommand(Array(CommandLine.arguments.dropFirst(2))))
 }

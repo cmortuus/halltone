@@ -25,8 +25,17 @@ public final class AppStreamCapture {
     private var generation = 0
     private var process: Process?
     private var currentIndex: Int?
+    private var _refusedBecausePlayer = false
+    /// Keys naming streams that must never be analyzed (the player the dialog pause controls): its
+    /// own speech would otherwise start a pause/resume loop. Empty for the Mac target.
+    private let excluding: () -> [String]
 
-    public init(app: String, tap: DialogTap) { self.app = app; self.tap = tap }
+    public init(app: String, tap: DialogTap, excluding: @escaping () -> [String] = { [] }) {
+        self.app = app; self.tap = tap; self.excluding = excluding
+    }
+
+    /// `sourceApp` names the stream of the player being paused, so nothing is analyzed.
+    public var refusedBecausePlayer: Bool { lock.lock(); defer { lock.unlock() }; return _refusedBecausePlayer }
 
     public func start() {
         lock.lock()
@@ -54,7 +63,15 @@ public final class AppStreamCapture {
         }
         var warnedMissing = false
         while isRunning(gen) {
-            let index = Self.sinkInputIndex(app: app, pactl: pactl)
+            let result = Self.sinkInputMatch(app: app, pactl: pactl, excluding: excluding())
+            let index = result?.index
+            lock.lock()
+            let wasRefused = _refusedBecausePlayer
+            _refusedBecausePlayer = result?.excluded == true
+            lock.unlock()
+            if result?.excluded == true, !wasRefused {
+                log.error("dialogPause.sourceApp \"\(self.app, privacy: .public)\" is the stream of the player that gets paused: NOT analyzing it (its own speech would pause and resume it in a loop). Set sourceApp to the game's name (`halltone-linux apps`).")
+            }
             lock.lock()
             let alive = process?.isRunning == true
             let changed = index != currentIndex || (index != nil && !alive)
@@ -119,7 +136,12 @@ public final class AppStreamCapture {
 
     // MARK: -
 
-    static func sinkInputIndex(app: String, pactl: String) -> Int? {
+    static func sinkInputMatch(app: String, pactl: String, excluding: [String]) -> (index: Int?, excluded: Bool)? {
+        guard let data = listSinkInputsJSON(pactl: pactl) else { return nil }
+        return matchResult(json: data, app: app, excluding: excluding)
+    }
+
+    static func listSinkInputsJSON(pactl: String) -> Data? {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: pactl)
         p.arguments = ["-f", "json", "list", "sink-inputs"]
@@ -130,27 +152,57 @@ public final class AppStreamCapture {
         let data = out.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
         guard p.terminationStatus == 0 else { return nil }
-        return match(json: data, app: app)
+        return data
     }
 
     /// The sink input to analyze: those whose `application.name`, `application.process.binary` or
     /// `media.name` equal `app` (case-insensitive) win over ones that merely contain it; playing
     /// (not corked) ones win over paused ones; then the lowest index.
     public static func match(json: Data, app: String) -> Int? {
+        matchResult(json: json, app: app, excluding: [])?.index
+    }
+
+    /// `match` that skips streams belonging to a controlled player (`PlayerStreamMap`). `excluded`
+    /// is true when the app would have matched but every match is the player's own stream.
+    public static func matchResult(json: Data, app: String, excluding: [String]) -> (index: Int?, excluded: Bool)? {
         guard let list = (try? JSONSerialization.jsonObject(with: json)) as? [[String: Any]] else { return nil }
         let want = app.lowercased()
         var best: (score: Int, index: Int)?
+        var sawExcluded = false
         for entry in list {
             guard let index = entry["index"] as? Int else { continue }
-            let props = entry["properties"] as? [String: Any] ?? [:]
-            let names = ["application.name", "application.process.binary", "media.name"]
-                .compactMap { (props[$0] as? String)?.lowercased() }
+            let names = names(of: entry)
             var score = 0
             if names.contains(want) { score = 2 } else if names.contains(where: { $0.contains(want) }) { score = 1 }
             guard score > 0 else { continue }
+            if PlayerStreamMap.isExcluded(names: names, keys: excluding) { sawExcluded = true; continue }
             if (entry["corked"] as? Bool) != true { score += 10 }
             if best == nil || score > best!.score || (score == best!.score && index < best!.index) { best = (score, index) }
         }
-        return best?.index
+        return (best?.index, best == nil && sawExcluded)
+    }
+
+    static func names(of entry: [String: Any]) -> [String] {
+        let props = entry["properties"] as? [String: Any] ?? [:]
+        return ["application.name", "application.process.binary", "media.name"].compactMap { (props[$0] as? String)?.lowercased() }
+    }
+
+    /// One playback stream, for `halltone-linux apps`.
+    public struct SinkInput: Equatable {
+        public var index: Int
+        public var name: String
+        public var binary: String
+        public var media: String
+        public var corked: Bool
+    }
+
+    public static func sinkInputs(json: Data) -> [SinkInput] {
+        guard let list = (try? JSONSerialization.jsonObject(with: json)) as? [[String: Any]] else { return [] }
+        return list.compactMap { e in
+            guard let index = e["index"] as? Int else { return nil }
+            let p = e["properties"] as? [String: Any] ?? [:]
+            return SinkInput(index: index, name: p["application.name"] as? String ?? "", binary: p["application.process.binary"] as? String ?? "",
+                             media: p["media.name"] as? String ?? "", corked: (e["corked"] as? Bool) == true)
+        }
     }
 }

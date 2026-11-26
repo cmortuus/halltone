@@ -88,6 +88,32 @@ public enum App {
         } catch { printError("\(error)"); return 2 }
     }
 
+    /// `halltone-linux apps`: the audio apps playing now (PulseAudio sink inputs), so the user can
+    /// find the game's name for `dialogPause.sourceApp`; streams of the MPRIS player are marked.
+    public static func appsCommand(_ args: [String]) -> Int32 {
+        do {
+            let media = try standaloneMedia(args)
+            guard let pactl = MacLocator.find("pactl") else { printError("pactl not found (package pulseaudio-utils)"); return 1 }
+            guard let json = AppStreamCapture.listSinkInputsJSON(pactl: pactl) else {
+                printError("can't list audio apps (is PulseAudio/PipeWire running? is pactl answering?)")
+                return 1
+            }
+            let inputs = AppStreamCapture.sinkInputs(json: json)
+            if inputs.isEmpty { print("no audio apps are playing (start the game or the video, then run this again)"); return 0 }
+            media.refresh()
+            let keys = media.excludedStreamKeys()
+            for i in inputs {
+                let excluded = PlayerStreamMap.isExcluded(names: [i.name, i.binary, i.media], keys: keys)
+                let label = i.name.isEmpty ? (i.binary.isEmpty ? "?" : i.binary) : i.name
+                let detail = [i.binary.isEmpty || i.binary == i.name ? nil : "binary \(i.binary)", i.media.isEmpty ? nil : "\"\(i.media)\""].compactMap { $0 }.joined(separator: ", ")
+                let note = excluded ? "   <- the player dialog pause controls: never analyzed" : (i.corked ? "   (paused)" : "")
+                print("sourceApp \"\(label)\"\(detail.isEmpty ? "" : "  (\(detail))")\(note)")
+            }
+            print("\nUse the game's name as dialogPause.sourceApp (--dialog-app).")
+            return 0
+        } catch { printError("\(error)"); return 2 }
+    }
+
     /// `halltone-linux media pause|play|toggle|next|previous|status`.
     public static func mediaCommand(_ args: [String]) -> Int32 {
         guard let word = args.first, !word.hasPrefix("-") else {

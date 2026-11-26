@@ -183,7 +183,7 @@ doesn't pick a Docker or VPN address, and `ts`, the Tailscale address).
 | `media.player` / `--media-player` | pin the MPRIS player the controls act on (substring of its bus name or identity, e.g. `firefox`) |
 | `media.ignore` / `--media-ignore` | list (flag: comma-separated) of players never touched, e.g. a game that registers MPRIS |
 | `allowRemoteControl` / `--no-remote-control` | let paired devices pause and resume this PC's player (default on) |
-| `dialogPause.*` / `--dialog-*` | pause the Mac's video during game dialog, see below (off by default) |
+| `dialogPause.*` / `--dialog-*` | pause the video (on a Mac, or on this PC) during game dialog, see below (off by default) |
 
 `halltone-linux --help` lists everything. Restart after editing the config:
 `systemctl --user restart halltone`.
@@ -259,7 +259,8 @@ yourself, it leaves it alone and answers `resumeSkipped` (see [Remote pause](#re
 | `dialogPause.mac` / `--dialog-mac` | the only Halltone Mac found | host, `host:port`, `[v6]:port` or the Bonjour name |
 | `dialogPause.minDialogMs` / `--dialog-min-ms` | `600` | speech must still be going this long after it began before the Mac is paused: one-liners ("Hey!") don't pause |
 | `dialogPause.resumeDelayMs` / `--dialog-resume-ms` | `1500` | resume this long after the last speech |
-| `dialogPause.sourceApp` / `--dialog-app` | (whole monitor) | PulseAudio application name to analyze instead of everything |
+| `dialogPause.sourceApp` / `--dialog-app` | (whole monitor) | PulseAudio application name to analyze instead of everything; **required** with `target: "local"` |
+| `dialogPause.target` / `--dialog-target` | `mac` | `mac` (the Mac above), `local` (the video on this PC via MPRIS, see [same PC](#dialog-pause-on-the-same-pc)), or a Mac's host |
 
 **Kill switch.** `halltone-linux dialog off` (also `on`, `status`) talks to the running service over
 a Unix socket (`$XDG_RUNTIME_DIR/halltone-linux.sock`); `kill -USR1 $(pidof halltone-linux)` flips
@@ -324,6 +325,66 @@ mode it follows the phone's capture, so the PC only pauses the Mac while the pho
 **Cost.** The detector runs on its own thread from a copy of the captured audio (a ring write per
 fragment on the capture thread; the copy is dropped, never waited for, if the detector falls behind),
 about 0.06 % of one core. It cannot delay streaming.
+
+### Dialog pause on the same PC
+
+When the game and the video run on the **same Ubuntu PC**, set `"target": "local"`: dialog pauses the
+video through MPRIS (the same `MediaController` as the phone's lock-screen controls; Firefox, Chrome,
+mpv, VLC and so on) and resumes it afterwards, with no network and no Mac. The timing, the one-liner
+skip and "resume only if it is still ours" are exactly as for the Mac (`minDialogMs`,
+`resumeDelayMs`; if you paused the video yourself, changed the track or closed the player, it is
+left alone).
+
+```json
+{ "dialogPause": { "enabled": true, "target": "local", "sourceApp": "Cyberpunk2077.exe" },
+  "media": { "player": "firefox" } }
+```
+
+**Set `sourceApp` to the game.** On one box the video's own speech is in the default monitor. If the
+detector heard it, pausing the video would end the "dialog", the resume would restart it, and the
+cycle would repeat. So `target: "local"` **refuses to start** without `sourceApp` (the message says
+so) and analyzes only the game's stream. Find its name while the game is running:
+
+```text
+$ halltone-linux apps
+sourceApp "Cyberpunk2077.exe"  ("audio stream")
+sourceApp "Firefox"  (binary firefox, "AudioStream")   <- the player dialog pause controls: never analyzed
+```
+
+Why refuse rather than "everything except the video"? The PulseAudio simple API records one
+monitor or (via `parec --monitor-stream`) one stream; hearing *all but one* stream would mean
+running and mixing a `parec` per application, with the timing and drift that brings. Naming the
+game is one stream, already how `sourceApp` works, and cannot hear the video by construction.
+
+Two more guards, so a wrong setting can't loop:
+
+- **The controlled player's own streams are never analyzed.** The MPRIS players this PC may pause
+  (honoring `media.player` / `media.ignore`) are mapped to their audio streams by bus name and
+  identity (`firefox.instance_1_42` / "Mozilla Firefox" ↔ the "Firefox" stream; Chromium ↔ "Google
+  Chrome"). If `sourceApp` happens to name one (say `"Firefox"` while Firefox is the player), it is
+  not analyzed, `halltone-linux dialog status` says `NOT ANALYZING`, and the log says why.
+- **A rate guard.** If the player is paused more than 4 times within 60 s, dialog pause stops
+  pausing it for 10 minutes (`LOOP GUARD` in the log, `status` says `LOOP GUARD TRIPPED`;
+  `halltone-linux dialog off` then `on` clears it). A pause that is already in effect is still
+  resumed. The limits aren't configurable on purpose: if it trips, fix `sourceApp`.
+
+`media.player` matters when several players exist: with the game's own MPRIS entry or a music player
+around, pin the one you watch (`"player": "firefox"`) or `media.ignore` the others. Every MPRIS call
+has a 2 s timeout (the whole pause or resume request gives up after 4 s), so a stuck player or bus
+can't freeze anything. `halltone-linux dialog status` shows `target: local (MPRIS): firefox (playing)`.
+
+**Check on Ubuntu** (game and a YouTube video in Firefox or Chrome on the same PC):
+
+1. Play a YouTube video in Firefox/Chrome; `halltone-linux players` lists it (`<- controlled`).
+2. Start the game and run `halltone-linux apps`; copy the game's `sourceApp` name. The browser's
+   stream must show `never analyzed`.
+3. Config as above, `systemctl --user restart halltone`; `halltone-linux dialog status` says
+   `target: local (MPRIS): ...`. Follow `journalctl --user -u halltone -f | grep Dialog`.
+4. A character talks: the YouTube video pauses ~0.6 s later (`← pauseForPeer ... to this PC (MPRIS): paused`),
+   resumes ~1.5 s after the last word, and **does not pause again** while the video's own speech plays.
+5. Pause the video yourself mid-conversation: it stays paused at the end (`resumeSkipped`).
+6. Tuning is the same as for the Mac (`minDialogMs`, `resumeDelayMs`). Seeing `LOOP GUARD`? `sourceApp`
+   isn't the game: re-check `halltone-linux apps`.
 
 **Manual end-to-end check** (Ubuntu PC, Mac, phone):
 
