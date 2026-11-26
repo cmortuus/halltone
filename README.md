@@ -58,6 +58,7 @@ The Mac only captures audio while a subscriber is alive.
 | Path | What |
 |---|---|
 | `Packages/HalltoneCore` | SwiftPM package shared by both apps and the CLI: `HalltoneCore` (wire format, codecs, jitter buffer, ring), `HalltoneSender` (macOS capture + UDP listener), `HalltoneReceiver` (UDP subscriber, decode pump, AVAudioEngine playback), vendored libopus (`COpus`). |
+| `Packages/HalltoneDialog` | Standalone SwiftPM package (no Apple frameworks; macOS + Linux): real-time **dialog detector** for 48 kHz stereo game audio (center extraction + vendored libfvad + level/band/modulation gates + hysteresis), and the `halltone-dialog-eval` tool. See its [README](Packages/HalltoneDialog/README.md). |
 | `HalltoneMac` | macOS menu bar app (SwiftUI `MenuBarExtra`). |
 | `HalltonePhone` | iOS app. |
 | `Tools/halltone-cli` | macOS test tool: capture to WAV, loopback sender/receiver, impairment simulation, latency report. |
@@ -97,6 +98,9 @@ and the apps are Apple-only and are left out of the package on Linux:
 ```bash
 cd Packages/HalltoneCore && swift build && swift test
 ```
+
+`Packages/HalltoneDialog` (the dialog detector) is a separate package that builds and tests the same way on
+macOS and Linux; on Ubuntu install `espeak-ng` so its speech tests run instead of skipping.
 
 CI (`.github/workflows/ci.yml`) runs this on Ubuntu 24.04 plus `scripts/test-core.sh` on macOS.
 
@@ -326,7 +330,8 @@ version 3 of the License, or (at your option) any later version. It is distribut
 that it will be useful, but WITHOUT ANY WARRANTY; see the license for details.
 
 Bundled third-party code keeps its own license: libopus (BSD-3-Clause), in
-`Packages/HalltoneCore/Sources/COpus/opus/COPYING`.
+`Packages/HalltoneCore/Sources/COpus/opus/COPYING`, and libfvad (the WebRTC VAD, BSD-3-Clause), in
+`Packages/HalltoneDialog/Sources/CFVAD/LICENSE`.
 
 Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
