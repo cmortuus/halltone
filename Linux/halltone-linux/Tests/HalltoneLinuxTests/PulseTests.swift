@@ -71,4 +71,32 @@ import HalltoneCore
         while Date() < deadline, followed < 0.2 { followed = Self.peak(of: client, seconds: 1) }
         #expect(followed > 0.2, "capture didn't follow the default sink change (peak \(followed))")
     }
+
+    /// Hammers default-sink switches: capture must keep flowing after every one.
+    @Test(.enabled(if: PulseTests.enabled)) func survivesRepeatedDefaultSinkSwitches() throws {
+        let run = try IntegrationTests.Running(extraArgs: ["--source", "pulse"])
+        defer { run.terminate() }
+        let (client, _) = try #require(run.connect())
+        _ = Self.sh("pactl load-module module-null-sink sink_name=ci2")
+        let noiseA = try Self.noise(into: "ci")
+        let noiseB = try Self.noise(into: "ci2")
+        defer { noiseA.terminate(); noiseB.terminate() }
+        var lastPos: UInt64?
+        for round in 0..<8 {
+            let sink = round % 2 == 0 ? "ci2" : "ci"
+            #expect(Self.sh("pactl set-default-sink \(sink)") == 0)
+            var heard: Float = 0
+            let deadline = Date().addingTimeInterval(8)
+            while Date() < deadline, heard < 0.2 { heard = Self.peak(of: client, seconds: 0.5) }
+            #expect(heard > 0.2, "no audio after switching to \(sink) (round \(round))")
+        }
+        // The stream stayed continuous (sample positions only ever advance by whole frames).
+        var positions: [UInt64] = []
+        let end = Date().addingTimeInterval(0.5)
+        while Date() < end {
+            if let p = client.receive(timeout: 0.1), case .audio(let pos, _, _) = p.message { positions.append(pos) }
+        }
+        for (a, b) in zip(positions, positions.dropFirst()) { #expect(b == a + 120); lastPos = b }
+        #expect(lastPos != nil)
+    }
 }

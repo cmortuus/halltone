@@ -33,12 +33,14 @@ public final class PulseSource: AudioSource {
     /// returns (a suspended sink delivers nothing, so that can take until something plays).
     private final class Reader {
         let lock = NSLock()
-        private var _abandoned = false
+        /// Ring writes go through the gate, so an abandoned reader can't write after `abandon()`.
+        let gate = ProducerGate()
         private var _failed = false
         var failedAt = Date.distantPast
         let sink: String?
         init(sink: String?) { self.sink = sink }
-        var abandoned: Bool { get { lock.locked { _abandoned } } set { lock.locked { _abandoned = newValue } } }
+        var abandoned: Bool { gate.abandoned }
+        func abandon() { gate.abandon() }
         var failed: Bool { lock.locked { _failed } }
         func fail() { lock.locked { _failed = true; failedAt = Date() } }
     }
@@ -70,7 +72,7 @@ public final class PulseSource: AudioSource {
         supervisor = nil
         ring = nil
         lock.unlock()
-        r?.abandoned = true
+        r?.abandon()
     }
 
     private var isStarted: Bool { lock.locked { started } }
@@ -100,7 +102,7 @@ public final class PulseSource: AudioSource {
     }
 
     private func replace(old: Reader?) {
-        old?.abandoned = true
+        old?.abandon()
         let sink = DefaultSink.current()
         let r = Reader(sink: sink)
         let frames = fragmentFrames
@@ -139,7 +141,8 @@ public final class PulseSource: AudioSource {
                 r.fail()
                 return
             }
-            buf.withUnsafeBufferPointer { _ = ring.write($0.baseAddress!, count: frames * 2) }
+            let wrote = buf.withUnsafeBufferPointer { r.gate.write(ring, $0.baseAddress!, count: frames * 2) }
+            if !wrote { return }
             dataAvailable?.signal()
         }
     }
