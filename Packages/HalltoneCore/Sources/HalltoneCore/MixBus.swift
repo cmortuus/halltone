@@ -109,6 +109,14 @@ public final class MixBus {
         c.muted = false
         c.renderGain = 1
         c.starved = false
+        // Nothing of the previous source may leak into this one. Safe here: the channel is
+        // detached (the mixer skips it) and its old decode pump has stopped, so there is
+        // neither a reader nor a writer.
+        c.ring.reset()
+        _ = c.underruns.exchange(0)
+        c.renderedFrames.store(0)
+        _ = c.maxCallbackFrames.exchange(0)
+        while c.wake.wait(timeout: .now()) == .success {}
         return c
     }
 

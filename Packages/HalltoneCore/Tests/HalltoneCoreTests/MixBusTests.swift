@@ -176,4 +176,29 @@ struct MixBusTests {
         #expect(again === all[3])
         #expect(again.volume == 1 && !again.muted)
     }
+
+    @Test func aReclaimedChannelStartsClean() throws {
+        let bus = MixBus()
+        let old = try #require(bus.claimChannel())
+        try old.attach()
+        _ = render(bus, [(old, 0.5, 0.5)]) // plays, leaves nothing...
+        _ = render(bus, [])                // ...then runs dry once (an underrun)
+        var leftover = [Float](repeating: 0.5, count: 512)
+        leftover.withUnsafeMutableBufferPointer { _ = old.ring.write($0.baseAddress!, count: 512) }
+        old.wake.signal()
+        bus.release(old)
+        #expect(old.ring.availableToRead == 512, "the old source's audio is still queued at release")
+
+        let next = try #require(bus.claimChannel())
+        #expect(next === old)
+        #expect(next.ring.availableToRead == 0)
+        #expect(next.underruns.load() == 0 && next.renderedFrames.load() == 0 && next.maxCallbackFrames.load() == 0)
+        #expect(next.wake.wait(timeout: .now()) == .timedOut, "no stale wake-ups")
+        try next.attach()
+        let first = render(bus, [])
+        #expect(first.l.allSatisfy { $0 == 0 } && first.r.allSatisfy { $0 == 0 }, "nothing of the old source is heard")
+        // New data plays, and only that (after the 64-frame fade-in that follows a dry callback).
+        let fresh = render(bus, [(next, 0.25, 0.25)])
+        #expect(fresh.l[64...].allSatisfy { abs($0 - 0.25) < 1e-6 })
+    }
 }
