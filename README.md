@@ -208,6 +208,15 @@ The latency report measures encode → scheduled-at-sink inside one Mac (same cl
 capture IO buffer (~5–10 ms) and the output device latency on top. Measured on loopback: ~55 ms
 on a clean link once the target has decayed to 30 ms, ~93 ms with 5% loss and 40 ms jitter.
 
+Game mode on loopback (`send --source tone --codec pcm --game`, then `receive --mode game`, 128-frame
+sink callbacks; the tone source writes 128-frame blocks like a minimal tap IO buffer): the
+encode → scheduled-at-sink median is about 13–25 ms on a clean link and 24–29 ms with
+`--sim-jitter 10`, against 26–32 ms (clean) and 32–41 ms (`--sim-jitter 10`) for Lowest with 5 ms
+frames. These numbers were taken on a heavily loaded Mac and vary run to run. They leave out the
+capture IO buffer (~3 ms), the render callback and the output device. The path to the headphone
+jack is roughly: 2.5 ms frame + 8–15 ms jitter buffer + ~5 ms hand-off + ~3 ms capture + ~10–20 ms
+iOS output = 40–55 ms. The status screen shows each part.
+
 For the real Mac → iPhone path, the phone's status screen shows buffer depth and an estimated
 latency (buffer + hand-off ring + ~20 ms output), which is the rough check the spec asks for.
 
