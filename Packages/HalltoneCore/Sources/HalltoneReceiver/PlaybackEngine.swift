@@ -5,84 +5,42 @@ import HalltoneCore
 
 private let log = Logger(subsystem: Constants.logSubsystem, category: "Playback")
 
-/// AVAudioEngine → AVAudioSourceNode pulling from the hand-off ring. The render block does no
+/// One AVAudioEngine with a single AVAudioSourceNode that pulls the `MixBus`: every source's
+/// hand-off ring is summed, scaled by its volume and soft-limited inside the render block, so
+/// sources join and leave the mix without the engine restarting. The render block does no
 /// allocation, locking or logging; it copies and de-interleaves.
-public final class PlaybackEngine: PlaybackSink {
-    public let ring = RingBuffer(capacity: 1 << 17) // ~1.3 s stereo
-    public let underruns = AtomicCounter()
-    public let renderedFrames = AtomicUInt64()
-    public let wake = DispatchSemaphore(value: 0)
-    public let maxCallbackFrames = AtomicCounter()
-    private let outputLock = NSLock()
-    private var outputUnit: UnsafeMutableRawPointer?
-    private let generation = AtomicCounter()
-    public var outputAudioUnit: UnsafeMutableRawPointer? {
-        outputLock.lock(); defer { outputLock.unlock() }
-        return outputUnit
-    }
-    public var outputGeneration: UInt32 { generation.load() }
-
+///
+/// (One node for all sources rather than one per source: the limiter has to see the sum, and a
+/// node per source would need a custom audio unit after the main mixer to do that.)
+public final class PlaybackEngine {
+    public let bus = MixBus()
     public private(set) var engine = AVAudioEngine()
     private var sourceNode: AVAudioSourceNode?
-    private let scratch: UnsafeMutablePointer<Float>
-    private let scratchFrames = 8192
     private var running = false
-    /// When false the render block outputs silence without touching the ring (used while paused).
-    public var muted = false
-
-    public init() {
-        scratch = .allocate(capacity: scratchFrames * 2)
-        scratch.initialize(repeating: 0, count: scratchFrames * 2)
+    /// start/stop/restart run from receiver queues (a source joining) and the main thread (route changes).
+    private let engineLock = NSRecursiveLock()
+    /// When true the render block outputs silence without touching the rings (used while paused).
+    public var muted: Bool {
+        get { bus.muted }
+        set { bus.muted = newValue }
     }
 
-    deinit { scratch.deallocate() }
+    public init() {
+        bus.startHook = { [unowned self] in try self.start() }
+        bus.stopHook = { [unowned self] in self.stop() }
+    }
 
     public func start() throws {
+        engineLock.lock(); defer { engineLock.unlock() }
         guard !running else { return }
         let fmt = AVAudioFormat(standardFormatWithSampleRate: Constants.sampleRate, channels: 2)!
-        let ring = self.ring, underruns = self.underruns, rendered = self.renderedFrames, wake = self.wake
-        let maxFrames = self.maxCallbackFrames
-        _ = maxFrames.exchange(0)
-        let scratch = self.scratch, scratchFrames = self.scratchFrames
-        let edge = EdgeState()
-        let node = AVAudioSourceNode(format: fmt) { [weak self] isSilence, _, frameCount, abl -> OSStatus in
+        let bus = self.bus
+        bus.resetCallbackStats()
+        let node = AVAudioSourceNode(format: fmt) { _, _, frameCount, abl -> OSStatus in
             let list = UnsafeMutableAudioBufferListPointer(abl)
-            let frames = Int(frameCount)
-            if frameCount > maxFrames.load() { _ = maxFrames.exchange(frameCount) }
             guard list.count >= 2, let l = list[0].mData?.assumingMemoryBound(to: Float.self),
                   let r = list[1].mData?.assumingMemoryBound(to: Float.self) else { return noErr }
-            if self?.muted == true || frames > scratchFrames {
-                // Output zeros but don't flag the buffer as silent: a paused app must keep
-                // "playing" or iOS suspends it in the background and the stream is lost.
-                l.update(repeating: 0, count: frames); r.update(repeating: 0, count: frames)
-                rendered.add(UInt64(frames))
-                return noErr
-            }
-            let want = frames * 2
-            let got = ring.read(into: scratch, count: want)
-            let gotFrames = got / 2
-            var i = 0
-            while i < gotFrames { l[i] = scratch[2 * i]; r[i] = scratch[2 * i + 1]; i += 1 }
-            // Ramp at the edges of a dropout (~1.3 ms) instead of cutting: an abrupt jump to or
-            // from silence is what turns a gap into a pop.
-            let ramp = 64
-            if edge.starved, gotFrames > 0 {
-                let n = min(ramp, gotFrames)
-                for k in 0..<n { let g = Float(k) / Float(n); l[k] *= g; r[k] *= g }
-                edge.starved = false
-            }
-            if gotFrames < frames {
-                if !edge.starved, gotFrames > 0 {
-                    let n = min(ramp, gotFrames)
-                    for k in 0..<n { let g = Float(n - k) / Float(n + 1); l[gotFrames - n + k] *= g; r[gotFrames - n + k] *= g }
-                }
-                edge.starved = true
-                (l + gotFrames).update(repeating: 0, count: frames - gotFrames)
-                (r + gotFrames).update(repeating: 0, count: frames - gotFrames)
-                underruns.add(1)
-            }
-            rendered.add(UInt64(frames))
-            wake.signal()
+            bus.render(left: l, right: r, frames: Int(frameCount))
             return noErr
         }
         engine.attach(node)
@@ -101,16 +59,14 @@ public final class PlaybackEngine: PlaybackSink {
             engine.prepare()
             try engine.start()
         }
-        outputLock.lock()
-        outputUnit = engine.outputNode.audioUnit.map { UnsafeMutableRawPointer($0) }
-        outputLock.unlock()
-        generation.add(1)
+        bus.setOutputUnit(engine.outputNode.audioUnit.map { UnsafeMutableRawPointer($0) })
         sourceNode = node
         running = true
         log.info("engine started; output \(self.engine.outputNode.outputFormat(forBus: 0).sampleRate) Hz")
     }
 
     public func stop() {
+        engineLock.lock(); defer { engineLock.unlock() }
         guard running else { return }
         engine.stop()
         if let n = sourceNode { engine.detach(n) }
@@ -119,12 +75,10 @@ public final class PlaybackEngine: PlaybackSink {
         log.info("engine stopped")
     }
 
-    /// Render-thread-only state: whether the last callback ran out of audio.
-    private final class EdgeState { var starved = false }
-
     /// Rebuild with a fresh AVAudioEngine after a route change, interruption or media-services
     /// reset. A stale engine can refuse to start after the output route changed.
     public func restart() throws {
+        engineLock.lock(); defer { engineLock.unlock() }
         stop()
         engine = AVAudioEngine()
         try start()
@@ -132,6 +86,7 @@ public final class PlaybackEngine: PlaybackSink {
 
     /// Drop the engine without starting a new one (used while idle); the next start() builds it.
     public func discardEngine() {
+        engineLock.lock(); defer { engineLock.unlock() }
         stop()
         engine = AVAudioEngine()
     }

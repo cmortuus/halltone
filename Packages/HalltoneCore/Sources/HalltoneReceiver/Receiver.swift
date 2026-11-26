@@ -72,6 +72,8 @@ public final class Receiver {
         public var handoffMs = 0
         /// Length of one audio frame from the Mac (2.5 ms in Game mode), in ms.
         public var frameMs: Double = 0
+        /// The same in samples (120 = the sender's Game mode); 0 before the first ACK.
+        public var frameSamples = 0
         /// Decode thread's audio-workgroup join result (0 = joined; nil before the first join).
         public var workgroupStatus: Int?
         /// Retransmission: frames asked for again, and how many of those then arrived in time.
@@ -101,6 +103,18 @@ public final class Receiver {
     /// While the phone is on cellular a larger cellular buffer is used regardless.
     public var latencyMode: LatencyMode = .auto {
         didSet { queue.async { [self] in applyEffectiveConfig() } }
+    }
+
+    /// With `latencyMode == .auto`, play a sender that uses 2.5 ms frames (its Game mode) in Game
+    /// mode: the default for a source nobody picked a latency for. Off, Auto means Auto.
+    public var gameFramesPlayAsGame = false {
+        didSet { queue.async { [self] in applyEffectiveConfig() } }
+    }
+
+    /// The mode actually in effect for a stream with these frames.
+    private func effectiveMode(frameSamples: Int) -> LatencyMode {
+        latencyMode == .auto && gameFramesPlayAsGame
+            ? LatencyMode.resolve(choice: nil, frameSamples: frameSamples) : latencyMode
     }
 
     /// Ask the Mac to keep headphones on this phone (stop it taking them back while listening).
@@ -167,7 +181,7 @@ public final class Receiver {
         let atMac = stats.macInputRecent == true || (stats.phoneNearMac ?? (stats.macUserActive == true))
         guard atMac != stats.atMac else { return }
         stats.atMac = atMac
-        if latencyMode == .auto, !onCellular, let pump {
+        if let pump, !onCellular, effectiveMode(frameSamples: pump.jitter.frameSamples) == .auto {
             log.notice("\(atMac ? "at" : "away from", privacy: .public) the Mac; retuning")
             pump.retune(effectiveConfig(frameSamples: pump.jitter.frameSamples))
         }
@@ -197,10 +211,11 @@ public final class Receiver {
 
     private func effectiveConfig(frameSamples: Int) -> JitterBuffer.Config {
         if onCellular { return .cellular(frameSamples: frameSamples) }
-        if latencyMode == .auto {
+        let mode = effectiveMode(frameSamples: frameSamples)
+        if mode == .auto {
             return .preset(stats.atMac ? .lowest : .stable, frameSamples: frameSamples)
         }
-        return .preset(latencyMode, frameSamples: frameSamples)
+        return .preset(mode, frameSamples: frameSamples)
     }
 
     /// Mode change (or cellular ↔ Wi-Fi): resize smoothly, keeping what's been learned about
@@ -268,8 +283,10 @@ public final class Receiver {
         }
     }
 
-    public func disconnect() {
+    /// `completion` runs on the receiver's queue once everything is torn down (the sink has left the mix).
+    public func disconnect(completion: (() -> Void)? = nil) {
         queue.async { [self] in
+            defer { completion?() }
             if let c = connection {
                 // Cancelling right away dropped the BYE, so the Mac kept the phone (and stayed
                 // muted) until it timed out 20 s later. Close only once it's on the wire.
@@ -399,6 +416,7 @@ public final class Receiver {
                 pump = p
                 stats.codec = codec
                 stats.frameMs = Double(frameSamples) * 1000 / Constants.sampleRate
+                stats.frameSamples = Int(frameSamples)
             }
             stats.macName = macName
             if case .subscribed = state {} else { log.info("subscribed to \(macName, privacy: .public) (\(String(describing: codec), privacy: .public), \(frameSamples) spf)") }

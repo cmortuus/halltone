@@ -169,7 +169,6 @@ final class DecodePump {
                     let aheadNs = UInt64(Double(ahead) / Constants.sampleRate * 1e9)
                     hook(pos, DispatchTime.now().uptimeNanoseconds + aheadNs)
                 }
-                softLimit(&out)
                 out.withUnsafeBufferPointer { sink.ring.write($0.baseAddress!, count: n) }
                 for i in 0..<n { lastOut[i] = out[i] }
                 wrote = true
@@ -221,23 +220,6 @@ final class DecodePump {
             cachedPos = nextPos
             for i in 0..<n { out[i] = cached[i] }
             crossfade(from: lastOut, to: &out)
-        }
-    }
-
-    /// Program material often peaks at full scale and Opus decoding can overshoot slightly; hard
-    /// clipping at the output sounds harsh. Pass everything below 0.9 untouched and bend the rest
-    /// smoothly toward ±1.
-    private func softLimit(_ x: inout [Float]) {
-        let knee: Float = 0.9
-        let range: Float = 1 - knee
-        for i in 0..<x.count {
-            let v = x[i]
-            let a = abs(v)
-            if a > knee {
-                let over = (a - knee) / range
-                let shaped = knee + range * (over / (1 + over))
-                x[i] = v < 0 ? -shaped : shaped
-            }
         }
     }
 
