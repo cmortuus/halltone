@@ -20,14 +20,36 @@ struct DBusIntegrationTests {
     final class FakePlayer {
         let process = Process()
         init(_ name: String, _ status: String, identity: String? = nil) throws {
-            let out = Pipe()
+            let out = Pipe(), err = Pipe()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
             process.arguments = ["python3", DBusIntegrationTests.fixture, name, status] + (identity.map { [$0] } ?? [])
             process.standardOutput = out
+            process.standardError = err
             try process.run()
-            let line = out.fileHandleForReading.availableData
-            guard String(decoding: line, as: UTF8.self).contains("ready") else {
-                throw ConfigError("fake MPRIS player \(name) didn't start")
+            // Wait for "ready" with a deadline, and say what the player printed if it doesn't come.
+            let lock = NSLock(); var text = "", errText = ""
+            let ready = DispatchSemaphore(value: 0)
+            Thread.detachNewThread {
+                while true {
+                    let d = out.fileHandleForReading.availableData
+                    if d.isEmpty { break }
+                    lock.lock(); text += String(decoding: d, as: UTF8.self); let ok = text.contains("ready"); lock.unlock()
+                    if ok { ready.signal() }
+                }
+            }
+            Thread.detachNewThread {
+                while true {
+                    let d = err.fileHandleForReading.availableData
+                    if d.isEmpty { break }
+                    lock.lock(); errText += String(decoding: d, as: UTF8.self); lock.unlock()
+                }
+            }
+            if ready.wait(timeout: .now() + 20) != .success {
+                lock.lock(); defer { lock.unlock() }
+                let env = ProcessInfo.processInfo.environment
+                let diag = "fake MPRIS player \(name) not ready after 20 s (running: \(process.isRunning)); stdout: \(text); stderr: \(errText); DBUS_SESSION_BUS_ADDRESS=\(env["DBUS_SESSION_BUS_ADDRESS"] ?? "unset") XDG_RUNTIME_DIR=\(env["XDG_RUNTIME_DIR"] ?? "unset")"
+                if process.isRunning { process.terminate() }
+                throw ConfigError(diag)
             }
         }
         func stop() { if process.isRunning { process.terminate(); process.waitUntilExit() } }

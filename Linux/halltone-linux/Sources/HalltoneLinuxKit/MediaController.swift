@@ -1,5 +1,8 @@
 import Foundation
 import HalltoneCore
+#if canImport(Glibc)
+import Glibc
+#endif
 
 // Media control on Linux over MPRIS (the D-Bus interface Firefox, Chrome, mpv, VLC, Spotify and
 // others implement). `MediaController` picks the player and drives it with explicit Pause / Play
@@ -276,8 +279,9 @@ public final class BusctlBackend: MPRISBackend {
     private var identities: [String: String] = [:]
     private let lock = NSLock()
 
-    public init(timeout: TimeInterval = 2) {
-        path = Self.find("busctl")
+    /// `executable` replaces the `busctl` found on PATH (tests use a command that never exits).
+    public init(executable: String? = nil, timeout: TimeInterval = 2) {
+        path = executable ?? Self.find("busctl")
         self.timeout = timeout
     }
 
@@ -364,22 +368,57 @@ public final class BusctlBackend: MPRISBackend {
 
     private func run(_ args: [String]) throws -> String {
         guard let path else { throw BusError(description: "busctl not found (it ships with systemd)") }
+        guard let r = CommandRunner.run(path, ["--user"] + args, timeout: timeout) else {
+            throw BusError(description: "busctl \(args.prefix(3).joined(separator: " ")) didn't answer in \(timeout) s (or can't run)")
+        }
+        guard r.status == 0 else { throw BusError(description: "busctl \(args.prefix(3).joined(separator: " ")) failed (\(r.status)): \(r.stderr)") }
+        return r.stdout
+    }
+}
+
+/// Runs a command with a hard deadline. stdout and stderr are drained concurrently (a full pipe
+/// can't wedge the child), and a command that doesn't exit in time is terminated, then killed:
+/// the caller gets nil ("no answer") and never hangs. A wedged D-Bus must not stall STATUS or a
+/// REMOTE_CONTROL ack.
+public enum CommandRunner {
+    public struct Result { public var status: Int32; public var stdout: String; public var stderr: String }
+
+    public static func run(_ executable: String, _ args: [String], timeout: TimeInterval) -> Result? {
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: path)
-        p.arguments = ["--user"] + args
-        let out = Pipe()
+        p.executableURL = URL(fileURLWithPath: executable)
+        p.arguments = args
+        let out = Pipe(), err = Pipe()
         p.standardOutput = out
-        p.standardError = FileHandle.nullDevice
+        p.standardError = err
         p.standardInput = FileHandle.nullDevice
-        do { try p.run() } catch { throw BusError(description: "can't run busctl: \(error)") }
-        let timer = DispatchSource.makeTimerSource(queue: .global())
-        timer.schedule(deadline: .now() + timeout)
-        timer.setEventHandler { if p.isRunning { p.terminate() } }
-        timer.resume()
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        timer.cancel()
-        guard p.terminationStatus == 0 else { throw BusError(description: "busctl \(args.prefix(3).joined(separator: " ")) failed (\(p.terminationStatus))") }
-        return String(decoding: data, as: UTF8.self)
+        let exited = DispatchSemaphore(value: 0)
+        p.terminationHandler = { _ in exited.signal() }
+        do { try p.run() } catch { return nil }
+
+        let lock = NSLock()
+        var outData = Data(), errData = Data()
+        let drained = DispatchGroup()
+        for (pipe, isOut) in [(out, true), (err, false)] {
+            drained.enter()
+            Thread.detachNewThread {
+                let d = pipe.fileHandleForReading.readDataToEndOfFile()
+                lock.lock(); if isOut { outData = d } else { errData = d }; lock.unlock()
+                drained.leave()
+            }
+        }
+        var finished = exited.wait(timeout: .now() + timeout) == .success
+        if !finished {
+            p.terminate()
+            finished = false
+            if exited.wait(timeout: .now() + 0.5) != .success {
+                kill(p.processIdentifier, SIGKILL)
+                _ = exited.wait(timeout: .now() + 0.5)
+            }
+        }
+        // The readers end at EOF; don't wait long in case a grandchild holds the pipe open.
+        _ = drained.wait(timeout: .now() + (finished ? 1.0 : 0.2))
+        guard finished else { return nil }
+        lock.lock(); defer { lock.unlock() }
+        return Result(status: p.terminationStatus, stdout: String(decoding: outData, as: UTF8.self), stderr: String(decoding: errData, as: UTF8.self))
     }
 }

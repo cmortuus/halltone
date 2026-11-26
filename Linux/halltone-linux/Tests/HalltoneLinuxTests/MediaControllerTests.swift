@@ -271,3 +271,43 @@ private final class Rig {
         #expect((Rig().media as RemoteControlEnvironment) is ExplicitPlaybackEnvironment)
     }
 }
+
+@Suite(.timeLimit(.minutes(1))) struct CommandTimeoutTests {
+    /// A "busctl" that never exits (and ignores nothing special): the answer is nil, soon.
+    @Test func aCommandThatNeverExitsIsKilledAndAnswersNothing() {
+        let start = Date()
+        let r = CommandRunner.run("/bin/sleep", ["60"], timeout: 0.4)
+        #expect(r == nil)
+        #expect(Date().timeIntervalSince(start) < 3)
+    }
+
+    @Test func outputLargerThanAPipeIsDrainedWhileTheCommandRuns() throws {
+        let r = try #require(CommandRunner.run("/bin/sh", ["-c", "head -c 400000 /dev/zero | tr '\\0' x; head -c 400000 /dev/zero | tr '\\0' y 1>&2"], timeout: 10))
+        #expect(r.status == 0)
+        #expect(r.stdout.count == 400_000 && r.stderr.count == 400_000)
+    }
+
+    @Test func aWedgedBusIsAFailedRefreshNotAHang() {
+        let m = MediaController(backend: BusctlBackend(executable: "/bin/sleep", timeout: 0.3))
+        let start = Date()
+        #expect(m.refresh() == false)      // `sleep --user list ...` is an error at once; use a real wedge below
+        #expect(m.perform(.pause) == false)
+        #expect(m.playbackState() == .unknown)
+        #expect(Date().timeIntervalSince(start) < 5)
+    }
+
+    @Test func aBusctlThatHangsTimesOut() throws {
+        let dir = NSTemporaryDirectory() + "halltone-hang-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let script = dir + "/busctl"
+        try "#!/bin/sh\nsleep 60\n".write(toFile: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script)
+        let m = MediaController(backend: BusctlBackend(executable: script, timeout: 0.3))
+        let start = Date()
+        #expect(m.playbackState() == .unknown)
+        #expect(m.perform(.play) == false)
+        #expect(m.pausePlayback() == nil)
+        #expect(Date().timeIntervalSince(start) < 8)
+    }
+}
