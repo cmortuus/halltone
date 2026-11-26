@@ -36,3 +36,20 @@ jobs:
         run: swift --version
       - name: Test
         run: scripts/test-core.sh
+
+  # Dialog detector (vendored libfvad + center extraction + gates); no Apple frameworks. Installs
+  # espeak-ng so the speech tests run instead of skipping.
+  linux-dialog:
+    name: Linux (Ubuntu 24.04) - HalltoneDialog build + test
+    runs-on: ubuntu-24.04
+    container: swift:6.1-noble
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install espeak-ng (speech test fixtures are synthesized at test time)
+        run: apt-get update && apt-get install -y --no-install-recommends espeak-ng
+      - name: Build
+        working-directory: Packages/HalltoneDialog
+        run: swift build
+      - name: Test
+        working-directory: Packages/HalltoneDialog
+        run: swift test
