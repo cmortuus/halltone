@@ -118,6 +118,12 @@ public final class MixBus {
         lock.lock(); claimed.remove(channel.index); lock.unlock()
     }
 
+    /// Whether a source currently holds this channel (claimed and not yet released).
+    public func isClaimed(_ channel: PlaybackChannel) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return claimed.contains(channel.index)
+    }
+
     public var attachedCount: Int {
         lock.lock(); defer { lock.unlock() }
         return channels.reduce(0) { $0 + ($1.isAttached ? 1 : 0) }

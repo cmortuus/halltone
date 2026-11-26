@@ -63,8 +63,9 @@ struct SourceManagerTests {
         #expect(m.settings.enabled == ["b"])
         wait("a leaves the mix") { bus.attachedCount == 1 }
         // Its channel comes back once the receiver is done with it.
-        var reclaimed: PlaybackChannel?
-        wait("a's channel is free again") { reclaimed = reclaimed ?? bus.claimChannel(); return reclaimed != nil }
+        // Wait for the release without claiming anything (claiming would take the lowest free index).
+        wait("a's channel is released") { !bus.isClaimed(aChannel) }
+        let reclaimed = bus.claimChannel()
         #expect(reclaimed === aChannel)
         m.disconnectAll()
     }
