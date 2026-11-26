@@ -23,7 +23,7 @@ public enum App {
             print("""
             halltone-linux \(version): \(c.name)
               pairing code: \(String(c.pairingCode))\(prepared.generatedCode ? "   (new: saved to \(prepared.path))" : "")
-              streaming \(frame), udp/\(c.port), source \(c.source.rawValue)
+              streaming \(frame), udp/\(c.port), source \(c.source.name)
             """)
             fflush(stdout)
             let runtime = try LinuxRuntime(config: c)
@@ -33,6 +33,30 @@ public enum App {
             printError("\(error)")
             return .failure(ExitCode(1))
         }
+    }
+
+    /// `halltone-linux dialog on|off|status [--socket <path>]`; returns the exit code.
+    public static func dialogCommand(_ args: [String]) -> Int32 {
+        var word: String?
+        var socket = ControlSocket.defaultPath()
+        var i = 0
+        while i < args.count {
+            if args[i] == "--socket", i + 1 < args.count { socket = args[i + 1]; i += 2; continue }
+            if args[i].hasPrefix("--socket=") { socket = String(args[i].dropFirst(9)); i += 1; continue }
+            if word == nil { word = args[i] } else { word = "?" }
+            i += 1
+        }
+        guard let word, ["on", "off", "status", "toggle"].contains(word) else {
+            printError("usage: halltone-linux dialog on|off|status [--socket <path>]")
+            return 2
+        }
+        let r = ControlSocket.request(path: socket, line: word)
+        guard let reply = r.reply else {
+            printError(r.error ?? "no answer")
+            return 1
+        }
+        print(reply.trimmingCharacters(in: .newlines))
+        return reply.hasPrefix("error") ? 1 : 0
     }
 
     private static func printError(_ text: String) {

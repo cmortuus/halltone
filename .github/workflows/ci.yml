@@ -64,16 +64,18 @@ jobs:
     container: swift:6.1-noble
     steps:
       - uses: actions/checkout@v4
-      - name: Install libpulse-dev, avahi-utils, a PulseAudio server for the capture test
-        run: apt-get update && apt-get install -y --no-install-recommends pkg-config libpulse-dev avahi-utils pulseaudio pulseaudio-utils
+      - name: Install libpulse-dev, avahi-utils, a PulseAudio server for the capture test, espeak-ng for the dialog fixtures
+        run: apt-get update && apt-get install -y --no-install-recommends pkg-config libpulse-dev avahi-utils pulseaudio pulseaudio-utils espeak-ng
       - name: Build (debug)
         working-directory: Linux/halltone-linux
         run: swift build
       - name: Build (release, as install.sh does)
         working-directory: Linux/halltone-linux
         run: swift build -c release && .build/release/halltone-linux --version
-      - name: Test (unit + integration with the tone source)
+      - name: Test (unit + integration with the tone source; dialog pause against a fake Mac)
         working-directory: Linux/halltone-linux
+        env:
+          HALLTONE_SHOW_LOG: "1"   # prints the dialog/ack log lines of the end-to-end run
         # stdbuf + timeout: if anything wedges, keep the log up to that point and fail fast.
         run: stdbuf -oL -eL timeout 420 swift test
       - name: Start PulseAudio with a null sink
@@ -83,12 +85,12 @@ jobs:
           su ci -c "XDG_RUNTIME_DIR=/tmp/pulse-ci pulseaudio -n --daemonize=yes --exit-idle-time=-1 --log-target=file:/tmp/pulse-ci/log -L 'module-null-sink sink_name=ci' -L 'module-native-protocol-unix auth-anonymous=1 socket=/tmp/pulse-ci/native'"
           sleep 2
           PULSE_SERVER=unix:/tmp/pulse-ci/native pactl info
-      - name: Test (PulseAudio capture and default-sink switching)
+      - name: Test (PulseAudio capture, default-sink switching, per-application dialog analysis)
         working-directory: Linux/halltone-linux
         env:
           HALLTONE_PULSE_TEST: "1"
           PULSE_SERVER: unix:/tmp/pulse-ci/native
-        run: stdbuf -oL -eL timeout 240 swift test --filter PulseTests
+        run: stdbuf -oL -eL timeout 420 swift test --filter PulseTests
       - name: PulseAudio log (on failure)
         if: failure()
         run: cat /tmp/pulse-ci/log || true

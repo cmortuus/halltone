@@ -26,6 +26,7 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../../Packages/HalltoneCore"),
+        .package(path: "../../Packages/HalltoneDialog"),
     ],
     targets: pulseTargets + [
         .target(
@@ -33,6 +34,8 @@ let package = Package(
             dependencies: [
                 .product(name: "HalltoneCore", package: "HalltoneCore"),
                 .product(name: "HalltoneSenderCore", package: "HalltoneCore"),
+                .product(name: "HalltoneDialog", package: "HalltoneDialog"),
+                .product(name: "HalltoneDialogEval", package: "HalltoneDialog"),
             ] + pulseDependencies
         ),
         .executableTarget(name: "halltone-linux", dependencies: ["HalltoneLinuxKit"]),
@@ -41,6 +44,8 @@ let package = Package(
             dependencies: [
                 "HalltoneLinuxKit",
                 .product(name: "HalltoneCore", package: "HalltoneCore"),
+                .product(name: "HalltoneDialog", package: "HalltoneDialog"),
+                .product(name: "HalltoneDialogEval", package: "HalltoneDialog"),
             ]
         ),
     ],

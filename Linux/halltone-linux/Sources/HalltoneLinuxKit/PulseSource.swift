@@ -23,6 +23,8 @@ public final class PulseSource: AudioSource {
 
     private let device: String
     private let fragmentFrames: Int
+    /// A copy of every captured fragment goes here (the dialog detector's feed); nil: no copy.
+    private let tap: DialogTap?
     private let lock = NSLock()
     private var started = false
     private var ring: RingBuffer?
@@ -48,7 +50,8 @@ public final class PulseSource: AudioSource {
     /// - Parameters:
     ///   - device: PulseAudio source name (default: monitor of the default sink).
     ///   - fragmentFrames: record fragment size in frames: 120 = 2.5 ms.
-    public init(device: String = "@DEFAULT_MONITOR@", fragmentFrames: Int = 120) {
+    public init(device: String = "@DEFAULT_MONITOR@", fragmentFrames: Int = 120, tap: DialogTap? = nil) {
+        self.tap = tap
         self.device = device
         self.fragmentFrames = max(48, fragmentFrames)
     }
@@ -141,7 +144,7 @@ public final class PulseSource: AudioSource {
                 r.fail()
                 return
             }
-            let wrote = buf.withUnsafeBufferPointer { r.gate.write(ring, $0.baseAddress!, count: frames * 2) }
+            let wrote = buf.withUnsafeBufferPointer { r.gate.write(ring, $0.baseAddress!, count: frames * 2, tap: tap) }
             if !wrote { return }
             dataAvailable?.signal()
         }

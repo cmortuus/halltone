@@ -96,6 +96,10 @@ public enum DialogEvent: Equatable, Sendable {
 public final class DialogDetector {
     public let config: DialogConfig
     public private(set) var isDialogActive = false
+    /// While a dialog is active: how long ago (ms, in audio time) the last sustained speech frame
+    /// was. 0 while no dialog is active. Lets a caller tell "still talking" from "line finished,
+    /// waiting out `endSilenceMs`".
+    public var msSinceSpeech: Int { isDialogActive ? sinceSpeech * DialogConfig.frameMs : 0 }
 
     // 48 kHz block = 10 ms
     private static let block = DialogConfig.sampleRate * DialogConfig.frameMs / 1000   // 480

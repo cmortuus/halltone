@@ -6,6 +6,8 @@ let package = Package(
     name: "HalltoneDialog",
     products: [
         .library(name: "HalltoneDialog", targets: ["HalltoneDialog"]),
+        // WAV reading/writing and synthetic test audio (used by halltone-linux's `--source wav:` and its tests).
+        .library(name: "HalltoneDialogEval", targets: ["HalltoneDialogEval"]),
         .executable(name: "halltone-dialog-eval", targets: ["halltone-dialog-eval"]),
     ],
     targets: [

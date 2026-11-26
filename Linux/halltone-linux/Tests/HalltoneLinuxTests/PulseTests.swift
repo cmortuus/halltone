@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import HalltoneCore
+import HalltoneDialogEval
 
 /// Real PulseAudio capture, only where CI (or a developer) has a server with a null sink and sets
 /// HALLTONE_PULSE_TEST=1: the sender listens to the default sink's monitor, and keeps doing so
@@ -98,5 +99,56 @@ import HalltoneCore
         }
         for (a, b) in zip(positions, positions.dropFirst()) { #expect(b == a + 120); lastPos = b }
         #expect(lastPos != nil)
+    }
+
+    // MARK: sourceApp (per-application analysis through parec --monitor-stream)
+
+    /// Plays `path` into the default sink as an application called `app`; returns when it finished.
+    static func play(_ path: String, as app: String) throws -> Process {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "exec paplay --client-name='\(app)' --device=ci '\(path)'"]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        try p.run()
+        return p
+    }
+
+    /// Dialog is spoken by "Game" while "Game" is the analyzed application: the Mac is paused and resumed.
+    @Test(.enabled(if: PulseTests.enabled && SpeechSynth.isAvailable))
+    func dialogFromTheAnalyzedApplicationPausesTheMac() throws {
+        let dir = DialogPauseEndToEndTests.tempDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let fx = try #require(try DialogPauseEndToEndTests.fixture(dir: dir))
+        let mac = FakeMac()
+        defer { mac.stop() }
+        let run = try DialogPauseEndToEndTests.Run(args: ["--source", "tone", "--dialog-pause", "--dialog-app", "Game",
+                                                          "--dialog-mac", "127.0.0.1:\(mac.port)", "--dialog-code", "7777"], dir: dir)
+        defer { run.stop() }
+        Thread.sleep(forTimeInterval: 1)
+        let player = try Self.play(fx.path, as: "Game")
+        defer { player.terminate() }
+        player.waitUntilExit()
+        Thread.sleep(forTimeInterval: 4)   // the end of the dialog and the resume delay
+        #expect(mac.requests.map(\.command) == [.pauseForPeer, .resumeForPeer], "got \(mac.requests.map(\.command)); log:\n\(run.log)")
+    }
+
+    /// The same dialog from another application ("VoiceChat") is not analyzed: nothing is sent.
+    @Test(.enabled(if: PulseTests.enabled && SpeechSynth.isAvailable))
+    func dialogFromAnotherApplicationIsIgnored() throws {
+        let dir = DialogPauseEndToEndTests.tempDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let fx = try #require(try DialogPauseEndToEndTests.fixture(dir: dir))
+        let mac = FakeMac()
+        defer { mac.stop() }
+        let run = try DialogPauseEndToEndTests.Run(args: ["--source", "tone", "--dialog-pause", "--dialog-app", "Game",
+                                                          "--dialog-mac", "127.0.0.1:\(mac.port)", "--dialog-code", "7777"], dir: dir)
+        defer { run.stop() }
+        Thread.sleep(forTimeInterval: 1)
+        let player = try Self.play(fx.path, as: "VoiceChat")
+        defer { player.terminate() }
+        player.waitUntilExit()
+        Thread.sleep(forTimeInterval: 3)
+        #expect(mac.requests.isEmpty, "voice chat triggered \(mac.requests.map(\.command)); log:\n\(run.log)")
     }
 }

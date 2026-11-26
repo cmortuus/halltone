@@ -179,23 +179,141 @@ doesn't pick a Docker or VPN address, and `ts`, the Tailscale address).
 | `advertise` / `--no-advertise` | publish over Avahi (default on) |
 | `pulseDevice` / `--device` | PulseAudio source to record, default `@DEFAULT_MONITOR@` |
 | `--source tone` | built-in 440 Hz test tone instead of PulseAudio (no audio server needed) |
+| `--source wav:<file>` | plays a WAV file once in real time (test input; used by the dialog-pause tests) |
+| `dialogPause.*` / `--dialog-*` | pause the Mac's video during game dialog, see below (off by default) |
 
 `halltone-linux --help` lists everything. Restart after editing the config:
 `systemctl --user restart halltone`.
 
 **Differences from the Mac sender.** No media keys: STATUS reports `controlsAvailable` false and
-CONTROL media keys from the lock screen are ignored. REMOTE_CONTROL (pause the PC from another
-paired device) answers `disabled`, and there are no headphone holds or "user at the PC" flags:
-those stay Mac-side features of the same sender core.
+CONTROL media keys from the lock screen are ignored. REMOTE_CONTROL *received* by the PC (pause the
+PC from another paired device) answers `disabled`, and there are no headphone holds or "user at the
+PC" flags: those stay Mac-side features of the same sender core. The other direction, the PC asking
+the Mac to pause, is the next section.
 
 **Latency.** On PipeWire the 2.5 ms fragment is a request: the graph's quantum (default 1024 frames,
 21 ms) is lowered to the smallest any client asks for, which this stream does while it runs. If the
 phone's buffer readout stays high, try a fixed small quantum
 (`pw-metadata -n settings 0 clock.force-quantum 128`; `0` undoes it).
 
+### Pausing the Mac's video during game dialog
+
+The scenario: you play a game on the Ubuntu PC while a YouTube video plays on the Mac, and the phone
+mixes both into your headphones. While a character talks, `halltone-linux` asks the Mac to pause the
+video (REMOTE_CONTROL `pauseForPeer`), and when the dialog is over it asks the Mac to resume
+(`resumeForPeer`). The Mac only resumes if nothing changed in between: if you touched playback
+yourself, it leaves it alone and answers `resumeSkipped` (see [Remote pause](#remote-pause-remote_control)).
+
+**Set it up** (it is off until you turn it on):
+
+1. On the Mac, Halltone is running and **Let paired devices pause playback** is on (menu, the default).
+   Note the Mac's pairing code.
+2. On the PC add to `~/.config/halltone/config.json` and `systemctl --user restart halltone`:
+
+   ```json
+   { "name": "Gaming PC", "pairingCode": 4821,
+     "dialogPause": { "enabled": true, "pairingCode": 7310 } }
+   ```
+
+   `dialogPause.pairingCode` is the **Mac's** code (REMOTE_CONTROL is checked against the receiver's
+   code; the top-level `pairingCode` is the PC's own, for the phone). With no `dialogPause.mac` the
+   PC uses the only other Halltone found by `avahi-browse -rt _halltone._udp` (needs `avahi-utils`);
+   if there are several, or none, the log says so and you set `"mac": "Calebs-MacBook.local"`, an IP,
+   `"192.168.1.23:47800"` or the Bonjour name shown in the phone's list.
+
+| key / flag | default | meaning |
+| --- | --- | --- |
+| `dialogPause.enabled` / `--dialog-pause` | `false` | start with dialog pause on |
+| `dialogPause.pairingCode` / `--dialog-code` | (required to use it) | the Mac's pairing code |
+| `dialogPause.mac` / `--dialog-mac` | the only Halltone Mac found | host, `host:port`, `[v6]:port` or the Bonjour name |
+| `dialogPause.minDialogMs` / `--dialog-min-ms` | `600` | speech must still be going this long after it began before the Mac is paused: one-liners ("Hey!") don't pause |
+| `dialogPause.resumeDelayMs` / `--dialog-resume-ms` | `1500` | resume this long after the last speech |
+| `dialogPause.sourceApp` / `--dialog-app` | (whole monitor) | PulseAudio application name to analyze instead of everything |
+
+**Kill switch.** `halltone-linux dialog off` (also `on`, `status`) talks to the running service over
+a Unix socket (`$XDG_RUNTIME_DIR/halltone-linux.sock`); `kill -USR1 $(pidof halltone-linux)` flips
+it too, handy as a keyboard shortcut. Turning it off while the Mac is paused asks the Mac to resume.
+`status` shows the state, the Mac it found and the last answer. A stopped or restarted service also
+asks the Mac to resume first.
+
+**Timing to expect.** The detector needs about 0.25 s of speech to say "dialog started" and reports
+the end exactly 1.2 s after the last speech. So the video pauses about **0.6 s after a character
+starts talking** (`minDialogMs`; never sooner than the detector's own 0.25 s), and resumes about
+**1.5 s after the last word** (`resumeDelayMs`, counted from the last speech, so with the default it
+is 0.3 s after the detector reports the end; a value under 1200 resumes the moment the end is
+reported). If the next line starts before the resume goes out, the video stays paused. Requests are
+retried with the same id every 300 ms, up to 5 times.
+
+**Tuning.** Read the decisions back with `journalctl --user -u halltone -f | grep -E 'Dialog'`:
+
+```text
+[Dialog] dialog STARTED at stream 12.40 s (known at 12.68 s, detection lag 280 ms) → pause in 320 ms if speech continues (minDialogMs 600)
+[Dialog] → pauseForPeer
+[Dialog] ← pauseForPeer id 2213590034 to 192.168.1.23:47800: paused (attempt 1, 6 ms)
+[Dialog] dialog ENDED at stream 19.10 s (known at 20.30 s, detection lag 1200 ms) → resume in 300 ms (resumeDelayMs 1500)
+[Dialog] → resumeForPeer
+[Dialog] ← resumeForPeer id 70161911 to 192.168.1.23:47800: resumed (attempt 1, 5 ms)
+```
+
+- *Pauses on one-liners or short barks* → raise `minDialogMs` (1000-1500). The log line "speech
+  stopped before minDialogMs elapsed: holding off the pause" means the filter worked.
+- *Pause comes too late* → lower `minDialogMs` (the floor is the detector's ~0.25 s).
+- *Video restarts mid-conversation* (long pauses between a character's sentences) → raise
+  `resumeDelayMs`; a new line before the resume goes out keeps it paused. *Resumes too slowly* →
+  lower it (under 1200 ms it resumes as soon as the end is detected).
+- *Dialog is missed* (no `STARTED` lines while a character clearly talks) → the known limit of the
+  detector: dialog at or below the music's loudness is increasingly lost (about 92-96 % of the
+  speech found at the same level, worse below; see the [detector README](Packages/HalltoneDialog/README.md)).
+  Turn the game's music volume down or its dialog/voice volume up, and play dialog in the center
+  (stereo, not hard-panned or with wide reverb). The detector's thresholds are not exposed in the
+  config; `halltone-dialog-eval` can replay a recording with different ones.
+- *Pauses on something that isn't dialog* → set `sourceApp` and check the log for the lines
+  above to see what triggered.
+- The answers explain themselves: `notPlaying` (nothing was playing on the Mac, so no resume is
+  sent), `badPairingCode` (use the Mac's code), `disabled` (the Mac's switch is off), `failed` (the
+  Mac couldn't tell whether it was playing, or lacks Accessibility permission), `resumeSkipped`
+  (you changed playback yourself; correct). `NO ANSWER` after 5 tries: Mac not running Halltone, not
+  reachable, or the wrong address; discovery is repeated on the next attempt.
+
+**`sourceApp`: analyze one application.** By default the detector listens to the same stream the
+phone gets, so voice chat in Discord can look like dialog. Set `dialogPause.sourceApp` to the game's
+PulseAudio application name (`pactl list sink-inputs | grep -E 'application.name|binary'`, e.g.
+`Cyberpunk2077.exe`; a case-insensitive match on the name, the process binary or the media name,
+exact matches preferred, substrings accepted). The phone still receives the full mix.
+
+*Why `parec`:* the PulseAudio *simple* API (what the sender captures with) cannot record a single
+playback stream; that is `pa_stream_set_monitor_stream` in the asynchronous API. Rather than add an
+async-API capture path, the sender runs `parec --monitor-stream=<sink-input index>` (it is
+`pa_stream_set_monitor_stream`; `pulseaudio-utils` is already required for `pactl`), finds the index
+with `pactl -f json list sink-inputs` once a second, and restarts `parec` when the stream appears,
+changes or ends; until then the detector hears silence. This also works on PipeWire through
+`pipewire-pulse`. In this mode dialog pause works even while no phone is listening; in whole-monitor
+mode it follows the phone's capture, so the PC only pauses the Mac while the phone is listening.
+
+**Cost.** The detector runs on its own thread from a copy of the captured audio (a ring write per
+fragment on the capture thread; the copy is dropped, never waited for, if the detector falls behind),
+about 0.06 % of one core. It cannot delay streaming.
+
+**Manual end-to-end check** (Ubuntu PC, Mac, phone):
+
+1. Mac: Halltone running, a YouTube video playing, **Let paired devices pause playback** on. Phone:
+   listening to the PC (and to the Mac) in Halltone.
+2. PC: `dialogPause` configured as above, restarted. `halltone-linux dialog status` says
+   `dialog pause: on` and `Mac: <address> (...)`. Follow the log: `journalctl --user -u halltone -f | grep Dialog`.
+3. Start a game with voiced dialog. When a character talks, the YouTube video pauses about 0.6 s
+   after they start and `← pauseForPeer ...: paused` is logged. About 1.5 s after they stop it resumes
+   (`← resumeForPeer ...: resumed`).
+4. Press pause on YouTube yourself during a conversation, then let the dialog end: it stays paused
+   (`resumeSkipped`). Pause the video before a dialog starts: `notPlaying`, and it is not resumed.
+5. `halltone-linux dialog off`, trigger dialog: nothing happens. `dialog on`: back to normal.
+6. Voice chat: set `sourceApp` to the game, talk in Discord: no pause.
+
 **Developing without a PC.** `halltone-linux` builds on macOS too, minus the PulseAudio source
 (`--source tone`): `cd Linux/halltone-linux && swift test`. The tests include the real executable
-with a tone source and a small UDP receiver that subscribes, decodes and checks the audio.
+with a tone source and a small UDP receiver that subscribes, decodes and checks the audio, and the
+dialog-pause path end to end: a synthesized line of speech over music plays through `--source wav:`
+and a fake Mac (a UDP responder) must receive pause and then resume, also with lost acks. Those
+need `say` (macOS) or `espeak-ng` (Ubuntu) and skip without one.
 
 ## Wire protocol (v1)
 

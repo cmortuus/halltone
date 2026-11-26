@@ -2,7 +2,39 @@ import Foundation
 import HalltoneCore
 import HalltoneSenderCore
 
-public enum SourceKind: String { case pulse, tone }
+public enum SourceKind: Equatable {
+    case pulse, tone
+    /// Test input: play this WAV file once in real time.
+    case wav(String)
+
+    public var name: String {
+        switch self {
+        case .pulse: return "pulse"
+        case .tone: return "tone"
+        case .wav(let path): return "wav:\(path)"
+        }
+    }
+}
+
+/// `dialogPause` in the config file: pause the Mac's video while the game has dialog.
+public struct DialogPauseSettings: Equatable {
+    public var enabled = false
+    /// The Mac: host, host:port, [v6]:port, or its Bonjour name. nil: the only Halltone Mac found.
+    public var mac: String?
+    /// The Mac's pairing code (what REMOTE_CONTROL is checked against).
+    public var pairingCode: UInt32?
+    public var resumeDelayMs = 1500
+    public var minDialogMs = 600
+    /// Analyze this application's stream (PulseAudio application name) instead of the whole monitor.
+    public var sourceApp: String?
+
+    public var timing: DialogPauseTiming {
+        var t = DialogPauseTiming()
+        t.minDialogMs = minDialogMs
+        t.resumeDelayMs = resumeDelayMs
+        return t
+    }
+}
 
 public struct ConfigError: Error, CustomStringConvertible {
     public let description: String
@@ -22,6 +54,13 @@ public struct Flags: Equatable {
     public var noAdvertise = false
     public var simulatedLoss: String?
     public var simulatedJitterMs: String?
+    public var dialogPause = false
+    public var dialogMac: String?
+    public var dialogCode: String?
+    public var dialogApp: String?
+    public var dialogMinMs: String?
+    public var dialogResumeMs: String?
+    public var controlSocket: String?
     public var help = false
     public var version = false
 
@@ -37,13 +76,26 @@ public struct Flags: Equatable {
       --codec pcm|opus     pcm (default: lowest latency) or opus (less Wi-Fi bandwidth)
       --frame-ms 2.5|5     PCM frame size (default 2.5 = Game mode); Opus is always 10
       --port <n>           UDP port (default 47800)
-      --source pulse|tone  Audio source: PulseAudio/PipeWire monitor (default) or a test tone
+      --source pulse|tone|wav:<file>
+                           Audio source: PulseAudio/PipeWire monitor (default), a test tone, or
+                           a WAV file played once (test input)
       --device <name>      PulseAudio source to capture (default @DEFAULT_MONITOR@)
       --no-advertise       Don't publish over Bonjour/Avahi (add the PC by IP in the app)
+      --dialog-pause       Pause the Mac's video during in-game dialog (config: dialogPause.enabled)
+      --dialog-mac <host>  The Mac: host[:port] or Bonjour name (default: the only one found)
+      --dialog-code <n>    The Mac's pairing code (dialogPause.pairingCode)
+      --dialog-app <name>  Analyze only this application's stream (dialogPause.sourceApp)
+      --dialog-min-ms <n>  Dialog must last this long before pausing (default 600)
+      --dialog-resume-ms <n>  Resume this long after the dialog's last speech (default 1500)
+      --control-socket <path>  Unix socket for `halltone-linux dialog on|off|status`
       --config <path>      Config file (default ~/.config/halltone/config.json)
       --simulate-loss <p>  Test hook: drop this fraction (0-1) of outgoing audio packets
       --simulate-jitter-ms <ms>  Test hook: delay outgoing audio by up to this many ms
       --version, --help
+
+    Subcommand (talks to the running halltone-linux; SIGUSR1 toggles the same switch):
+
+      halltone-linux dialog on|off|status [--socket <path>]
     """
 
     public static func parse(_ args: [String]) throws -> Flags {
@@ -73,6 +125,13 @@ public struct Flags: Equatable {
             case "--device": f.pulseDevice = try value(arg, inline)
             case "--simulate-loss": f.simulatedLoss = try value(arg, inline)
             case "--simulate-jitter-ms": f.simulatedJitterMs = try value(arg, inline)
+            case "--dialog-pause": f.dialogPause = true
+            case "--dialog-mac": f.dialogMac = try value(arg, inline)
+            case "--dialog-code": f.dialogCode = try value(arg, inline)
+            case "--dialog-app": f.dialogApp = try value(arg, inline)
+            case "--dialog-min-ms": f.dialogMinMs = try value(arg, inline)
+            case "--dialog-resume-ms": f.dialogResumeMs = try value(arg, inline)
+            case "--control-socket": f.controlSocket = try value(arg, inline)
             case "--no-advertise": f.noAdvertise = true
             case "--help", "-h": f.help = true
             case "--version": f.version = true
@@ -96,6 +155,8 @@ public struct LinuxConfig: Equatable {
     public var advertise: Bool
     public var simulatedLoss: Double
     public var simulatedJitterMs: Double
+    public var dialogPause = DialogPauseSettings()
+    public var controlSocket: String?
 
     public static let defaultPulseDevice = "@DEFAULT_MONITOR@"
     public static let pairingCodeRange: ClosedRange<UInt32> = 1000...9999
@@ -183,8 +244,12 @@ public struct LinuxConfig: Equatable {
 
         // Source and device.
         let sourceText = (flags.source ?? "pulse").lowercased()
-        guard let source = SourceKind(rawValue: sourceText) else {
-            throw ConfigError("source must be \"pulse\" or \"tone\", not \"\(sourceText)\"")
+        let source: SourceKind
+        if sourceText == "pulse" { source = .pulse } else if sourceText == "tone" { source = .tone } else if sourceText.hasPrefix("wav:"), sourceText.count > 4 {
+            // Keep the path's own case.
+            source = .wav(String((flags.source ?? "").dropFirst(4)))
+        } else {
+            throw ConfigError("source must be \"pulse\", \"tone\" or \"wav:<file>\", not \"\(sourceText)\"")
         }
         let device = try flags.pulseDevice ?? string("pulseDevice") ?? defaultPulseDevice
 
@@ -200,9 +265,59 @@ public struct LinuxConfig: Equatable {
         let jitter = try number(flags.simulatedJitterMs, "--simulate-jitter-ms") ?? 0
         guard (0...1).contains(loss), jitter >= 0 else { throw ConfigError("--simulate-loss is 0-1, --simulate-jitter-ms is >= 0") }
 
-        return LinuxConfig(name: name, pairingCode: codeValue, codec: codec, frameMs: frameMs,
-                           port: UInt16(portValue), source: source, pulseDevice: device,
-                           advertise: advertise, simulatedLoss: loss, simulatedJitterMs: jitter)
+        var config = LinuxConfig(name: name, pairingCode: codeValue, codec: codec, frameMs: frameMs,
+                                 port: UInt16(portValue), source: source, pulseDevice: device,
+                                 advertise: advertise, simulatedLoss: loss, simulatedJitterMs: jitter)
+        config.dialogPause = try resolveDialogPause(file: file["dialogPause"], flags: flags)
+        config.controlSocket = flags.controlSocket
+        return config
+    }
+
+    /// The `dialogPause` object (keys enabled, mac, pairingCode, resumeDelayMs, minDialogMs,
+    /// sourceApp) merged with the `--dialog-*` flags.
+    static func resolveDialogPause(file raw: Any?, flags: Flags) throws -> DialogPauseSettings {
+        var d: [String: Any] = [:]
+        if let raw {
+            guard let obj = raw as? [String: Any] else { throw ConfigError("config.json: \"dialogPause\" must be an object") }
+            d = obj
+        }
+        func string(_ key: String) throws -> String? {
+            guard let v = d[key] else { return nil }
+            if let s = v as? String { return s }
+            if let i = v as? Int { return String(i) }
+            throw ConfigError("config.json: dialogPause.\(key) must be a string or number")
+        }
+        func int(_ text: String?, _ what: String, _ range: ClosedRange<Int>) throws -> Int? {
+            guard let text else { return nil }
+            guard let v = Int(text.trimmingCharacters(in: .whitespaces)), range.contains(v) else {
+                throw ConfigError("\(what) must be a whole number \(range.lowerBound)-\(range.upperBound), not \"\(text)\"")
+            }
+            return v
+        }
+        var s = DialogPauseSettings()
+        if let v = d["enabled"] {
+            guard let b = v as? Bool else { throw ConfigError("config.json: dialogPause.enabled must be true or false") }
+            s.enabled = b
+        }
+        if flags.dialogPause { s.enabled = true }
+        let mac = try flags.dialogMac ?? string("mac")
+        s.mac = mac?.trimmingCharacters(in: .whitespaces).isEmpty == true ? nil : mac?.trimmingCharacters(in: .whitespaces)
+        if let code = try flags.dialogCode ?? string("pairingCode") {
+            guard let v = UInt32(code.trimmingCharacters(in: .whitespaces)), pairingCodeRange.contains(v) else {
+                throw ConfigError("dialogPause.pairingCode must be 4 digits (1000-9999), not \"\(code)\"")
+            }
+            s.pairingCode = v
+        }
+        s.resumeDelayMs = try int(flags.dialogResumeMs, "--dialog-resume-ms", 0...60_000)
+            ?? int(string("resumeDelayMs"), "dialogPause.resumeDelayMs", 0...60_000) ?? s.resumeDelayMs
+        s.minDialogMs = try int(flags.dialogMinMs, "--dialog-min-ms", 0...10_000)
+            ?? int(string("minDialogMs"), "dialogPause.minDialogMs", 0...10_000) ?? s.minDialogMs
+        let app = try flags.dialogApp ?? string("sourceApp")
+        s.sourceApp = app?.trimmingCharacters(in: .whitespaces).isEmpty == true ? nil : app?.trimmingCharacters(in: .whitespaces)
+        if s.enabled, s.pairingCode == nil {
+            throw ConfigError("dialogPause is enabled but dialogPause.pairingCode (the Mac's pairing code) is not set")
+        }
+        return s
     }
 }
 
