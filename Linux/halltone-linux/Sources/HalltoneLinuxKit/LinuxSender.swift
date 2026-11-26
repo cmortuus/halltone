@@ -49,7 +49,8 @@ public final class LinuxSender: SenderCore {
 public final class LinuxRuntime {
     public let config: LinuxConfig
     public let sender: LinuxSender
-    /// Dialog pause (detector + REMOTE_CONTROL client); nil without `dialogPause.pairingCode`.
+    /// Dialog pause (detector + REMOTE_CONTROL client or local MPRIS); nil unless `dialogPause.target`
+    /// is "local" or `dialogPause.pairingCode` (the Mac's) is set.
     public let dialog: DialogPauseService?
     /// MPRIS media control; shared with dialog pause on this PC.
     public let media: MediaController
@@ -61,11 +62,11 @@ public final class LinuxRuntime {
         let kind = config.source
         let tone = config.gameMode ? 128 : 480
         let device = config.pulseDevice
-        let service = config.dialogPause.pairingCode == nil ? nil
-            : DialogPauseService(settings: config.dialogPause, selfName: config.name)
-        dialog = service
         let media = MediaController(pin: config.media.player, ignore: config.media.ignore)
         self.media = media
+        let service = config.dialogPause.isConfigured
+            ? DialogPauseService(settings: config.dialogPause, selfName: config.name, media: media) : nil
+        dialog = service
         let allow = config.allowRemoteControl
         let tap = service?.captureTap
         switch kind {
@@ -108,7 +109,7 @@ public final class LinuxRuntime {
     public func stop() {
         control?.stop()
         media.stopPolling()
-        dialog?.stop()    // asks the Mac to resume if it was paused for us
+        dialog?.stop()    // asks the Mac (or resumes the local player) if it was paused for us
         sender.stop()
     }
 
@@ -122,7 +123,7 @@ public final class LinuxRuntime {
 
     /// One control-socket line (`on`, `off`, `toggle`, `status`) → the reply.
     public func handleControl(_ command: String) -> String {
-        let unconfigured = "error: dialog pause is not configured: set dialogPause.pairingCode (the Mac's pairing code) in the config and restart"
+        let unconfigured = "error: dialog pause is not configured: set dialogPause.pairingCode (the Mac's pairing code) or dialogPause.target \"local\" in the config and restart"
         switch command {
         case "on", "off":
             guard let dialog else { return unconfigured }

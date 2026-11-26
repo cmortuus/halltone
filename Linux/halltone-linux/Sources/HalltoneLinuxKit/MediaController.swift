@@ -150,6 +150,12 @@ public final class MediaController: ExplicitPlaybackEnvironment {
         return eligible.first
     }
 
+    /// Every player the config lets us touch, from the last snapshot.
+    public func eligiblePlayers() -> [MPRISPlayer] {
+        lock.lock(); defer { lock.unlock() }
+        return snapshot.filter(isEligible)
+    }
+
     private func remember(_ p: MPRISPlayer) { lock.lock(); lastActive = p.bus; lock.unlock() }
 
     // MARK: - Reading

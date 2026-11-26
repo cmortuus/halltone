@@ -14,6 +14,8 @@ public struct RemoteSendOutcome: Equatable {
     public var attempts = 0
     public var elapsedMs = 0
     public var error: String?
+    /// A reason to show instead of the usual hint for `result` (the local loop guard).
+    public var note: String?
 }
 
 public protocol RemoteSending: AnyObject {

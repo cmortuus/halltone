@@ -18,6 +18,9 @@ public enum SourceKind: Equatable {
 
 /// `dialogPause` in the config file: pause the Mac's video while the game has dialog.
 public struct DialogPauseSettings: Equatable {
+    /// What gets paused: the video on a Mac over REMOTE_CONTROL, or a player on this PC over MPRIS.
+    public enum Target: Equatable { case mac, local }
+    public var target = Target.mac
     public var enabled = false
     /// The Mac: host, host:port, [v6]:port, or its Bonjour name. nil: the only Halltone Mac found.
     public var mac: String?
@@ -27,6 +30,13 @@ public struct DialogPauseSettings: Equatable {
     public var minDialogMs = 600
     /// Analyze this application's stream (PulseAudio application name) instead of the whole monitor.
     public var sourceApp: String?
+
+    /// Pause/resume cycles of one local player allowed per window before the loop guard stops pausing.
+    public var maxPauses = 4
+    public var pauseWindowSeconds = 60.0
+
+    /// Whether the dialog-pause service exists at all: a local target, or the Mac's code is known.
+    public var isConfigured: Bool { target == .local || pairingCode != nil }
 
     public var timing: DialogPauseTiming {
         var t = DialogPauseTiming()
@@ -88,6 +98,7 @@ public struct Flags: Equatable {
     public var dialogMac: String?
     public var dialogCode: String?
     public var dialogApp: String?
+    public var dialogTarget: String?
     public var dialogMinMs: String?
     public var dialogResumeMs: String?
     public var controlSocket: String?
@@ -119,6 +130,9 @@ public struct Flags: Equatable {
       --dialog-mac <host>  The Mac: host[:port] or Bonjour name (default: the only one found)
       --dialog-code <n>    The Mac's pairing code (dialogPause.pairingCode)
       --dialog-app <name>  Analyze only this application's stream (dialogPause.sourceApp)
+      --dialog-target <mac|local|host>
+                           What to pause: a Mac (default), the video on this PC (local, via MPRIS;
+                           needs --dialog-app), or a Mac's host (dialogPause.target)
       --dialog-min-ms <n>  Dialog must last this long before pausing (default 600)
       --dialog-resume-ms <n>  Resume this long after the dialog's last speech (default 1500)
       --control-socket <path>  Unix socket for `halltone-linux dialog on|off|status`
@@ -137,6 +151,7 @@ public struct Flags: Equatable {
     Subcommands (talk to MPRIS directly; they honor --config, --media-player, --media-ignore):
 
       halltone-linux players                  List MPRIS players and their status
+      halltone-linux apps                     List audio apps (sink inputs): find the game's name for --dialog-app
       halltone-linux media pause|play|toggle|next|previous|status
     """
 
@@ -171,6 +186,7 @@ public struct Flags: Equatable {
             case "--dialog-mac": f.dialogMac = try value(arg, inline)
             case "--dialog-code": f.dialogCode = try value(arg, inline)
             case "--dialog-app": f.dialogApp = try value(arg, inline)
+            case "--dialog-target": f.dialogTarget = try value(arg, inline)
             case "--dialog-min-ms": f.dialogMinMs = try value(arg, inline)
             case "--dialog-resume-ms": f.dialogResumeMs = try value(arg, inline)
             case "--control-socket": f.controlSocket = try value(arg, inline)
@@ -317,6 +333,11 @@ public struct LinuxConfig: Equatable {
                                  port: UInt16(portValue), source: source, pulseDevice: device,
                                  advertise: advertise, simulatedLoss: loss, simulatedJitterMs: jitter)
         config.dialogPause = try resolveDialogPause(file: file["dialogPause"], flags: flags)
+        if config.dialogPause.target == .local, config.dialogPause.sourceApp == nil, source == .pulse {
+            // The video's own speech is in the default monitor: pausing it would end the "dialog" and
+            // resuming it would start it again. Analyzing only the game's stream avoids that.
+            throw ConfigError("dialogPause.target \"local\" needs dialogPause.sourceApp (--dialog-app): the game's PulseAudio application name, so the video's own speech isn't mistaken for dialog (find it with `halltone-linux apps`)")
+        }
         config.controlSocket = flags.controlSocket
         config.media = try MediaSettings.resolve(file: file["media"], flags: flags)
         if let v = file["allowRemoteControl"] {
@@ -356,6 +377,14 @@ public struct LinuxConfig: Equatable {
         if flags.dialogPause { s.enabled = true }
         let mac = try flags.dialogMac ?? string("mac")
         s.mac = mac?.trimmingCharacters(in: .whitespaces).isEmpty == true ? nil : mac?.trimmingCharacters(in: .whitespaces)
+        // `target`: "mac" (default), "local" (this PC over MPRIS), or a host (the Mac to ask).
+        if let t = try (flags.dialogTarget ?? string("target"))?.trimmingCharacters(in: .whitespaces), !t.isEmpty {
+            switch t.lowercased() {
+            case "local": s.target = .local; s.mac = nil
+            case "mac": s.target = .mac
+            default: s.target = .mac; s.mac = t
+            }
+        }
         if let code = try flags.dialogCode ?? string("pairingCode") {
             guard let v = UInt32(code.trimmingCharacters(in: .whitespaces)), pairingCodeRange.contains(v) else {
                 throw ConfigError("dialogPause.pairingCode must be 4 digits (1000-9999), not \"\(code)\"")
@@ -368,7 +397,7 @@ public struct LinuxConfig: Equatable {
             ?? int(string("minDialogMs"), "dialogPause.minDialogMs", 0...10_000) ?? s.minDialogMs
         let app = try flags.dialogApp ?? string("sourceApp")
         s.sourceApp = app?.trimmingCharacters(in: .whitespaces).isEmpty == true ? nil : app?.trimmingCharacters(in: .whitespaces)
-        if s.enabled, s.pairingCode == nil {
+        if s.enabled, s.target == .mac, s.pairingCode == nil {
             throw ConfigError("dialogPause is enabled but dialogPause.pairingCode (the Mac's pairing code) is not set")
         }
         return s

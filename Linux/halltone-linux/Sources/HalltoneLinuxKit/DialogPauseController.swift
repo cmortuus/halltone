@@ -26,8 +26,11 @@ public final class DialogPauseController {
     private var lastAck: String?
     private var lastAckAt = 0.0
     private var loggedOneLiner = false
+    /// What is being paused, for the log and `status`: "Mac" or "local player".
+    private let targetName: String
 
-    public init(timing: DialogPauseTiming, client: RemoteSending, enabled: Bool) {
+    public init(timing: DialogPauseTiming, client: RemoteSending, enabled: Bool, targetName: String = "Mac") {
+        self.targetName = targetName
         machine = DialogPauseMachine(timing: timing)
         self.client = client
         self.enabled = enabled
@@ -102,7 +105,7 @@ public final class DialogPauseController {
         switch machine.phase {
         case .idle: phase = "idle (no dialog)"
         case .pending: phase = "dialog heard, waiting minDialogMs before pausing"
-        case .paused: phase = "Mac paused, dialog going on"
+        case .paused: phase = "\(targetName) paused, dialog going on"
         case .resuming: phase = "dialog ended, waiting resumeDelayMs before resuming"
         }
         if !enabled { phase = "off" }
@@ -147,7 +150,8 @@ public final class DialogPauseController {
         let where_ = out.target ?? "no target"
         if let r = out.result {
             let answer = "\(r)"
-            log.notice("← \(name) id \(out.requestID) to \(where_): \(answer) (attempt \(out.attempts), \(out.elapsedMs) ms)\(self.hint(action, r))")
+            let why = out.note.map { " (\($0))" } ?? self.hint(action, r)
+            log.notice("← \(name) id \(out.requestID) to \(where_): \(answer) (attempt \(out.attempts), \(out.elapsedMs) ms)\(why)")
         } else {
             log.error("← \(name) id \(out.requestID) to \(where_): NO ANSWER (\(out.error ?? "unknown"), \(out.attempts) attempts, \(out.elapsedMs) ms)")
         }
@@ -155,11 +159,11 @@ public final class DialogPauseController {
 
     private func hint(_ action: PauseAction, _ r: RemoteResult) -> String {
         switch r {
-        case .notPlaying: return " (nothing was playing on the Mac, so nothing was paused)"
-        case .resumeSkipped: return " (the Mac left it alone: playback was changed since the pause)"
+        case .notPlaying: return " (nothing was playing on the \(targetName), so nothing was paused)"
+        case .resumeSkipped: return " (the \(targetName) left it alone: playback was changed since the pause)"
         case .badPairingCode: return " (check dialogPause.pairingCode: it is the Mac's code)"
         case .disabled: return " (the Mac's \"Let paired devices pause playback\" switch is off)"
-        case .failed: return " (the Mac couldn't tell whether it is playing, or lacks Accessibility permission)"
+        case .failed: return " (the \(targetName) couldn't tell whether it is playing\(targetName == "Mac" ? ", or lacks Accessibility permission" : " (is a media player running?)"))"
         default: return ""
         }
     }
