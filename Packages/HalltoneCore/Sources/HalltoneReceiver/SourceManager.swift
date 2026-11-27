@@ -74,16 +74,19 @@ public final class SourceManager {
     public var holdHeadphones = false { didSet { sources.forEach { $0.receiver.holdHeadphones = holdHeadphones } } }
 
     private let callbackQueue: DispatchQueue
+    private let pairingStore: PairingStore?
     private let makeReceiver: (PlaybackSink) -> Receiver
     private let clock: () -> TimeInterval
     private var mediaChoice: String?
 
     public init(bus: MixBus, store: SettingsStore, callbackQueue: DispatchQueue = .main,
+                pairingStore: PairingStore? = nil,
                 clock: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
                 makeReceiver: @escaping (PlaybackSink) -> Receiver = { Receiver(sink: $0) }) {
         self.bus = bus
         self.settings = SourceSettings(store: store)
         self.callbackQueue = callbackQueue
+        self.pairingStore = pairingStore
         self.clock = clock
         self.makeReceiver = makeReceiver
     }
@@ -132,6 +135,16 @@ public final class SourceManager {
         let channel = source.channel, bus = self.bus
         // Hand the channel back only once the receiver has stopped writing to it.
         source.receiver.disconnect { bus.release(channel) }
+    }
+
+    /// Delete a source for good: disconnect it, forget its settings and its place in the set that
+    /// reconnects at launch, and delete its stored pairing code so the next connection asks again.
+    /// If it was the media source, the choice moves to the next eligible one.
+    public func remove(id: String, pairingKey: String) {
+        disconnect(id: id)
+        settings.forget(id)
+        pairingStore?.deletePairingCode(for: pairingKey)
+        if mediaChoice == id { mediaChoice = nil }
     }
 
     /// Disconnect everything. The set that comes back at launch is left as it was.

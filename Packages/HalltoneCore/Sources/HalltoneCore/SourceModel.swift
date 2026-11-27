@@ -37,6 +37,18 @@ public final class MemorySettingsStore: SettingsStore {
     public func set(_ data: Data?, forKey key: String) { values[key] = data }
 }
 
+/// Where pairing codes live: the Keychain in the phone app, a dictionary in tests. Keyed by the
+/// source's pairing key (a Bonjour name, or the id of a manual entry).
+public protocol PairingStore: AnyObject {
+    func deletePairingCode(for key: String)
+}
+
+public final class MemoryPairingStore: PairingStore {
+    public private(set) var codes: [String: UInt32]
+    public init(codes: [String: UInt32] = [:]) { self.codes = codes }
+    public func deletePairingCode(for key: String) { codes[key] = nil }
+}
+
 /// The set of sources the user turned on (kept across launches, in the order they were added) and
 /// each source's volume, mute and latency choice. Written through to the store on every change.
 public final class SourceSettings {

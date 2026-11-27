@@ -70,6 +70,41 @@ struct SourceManagerTests {
         m.disconnectAll()
     }
 
+    @Test func removingASourceForgetsEverythingAboutIt() {
+        let store = MemorySettingsStore()
+        let pairing = MemoryPairingStore(codes: ["Mac a": 1111, "b": 2222])
+        let bus = MixBus()
+        let m = SourceManager(bus: bus, store: store, pairingStore: pairing)
+        _ = add(m, "a"); _ = add(m, "b")
+        m.setVolume(0.2, for: "a")
+        m.remove(id: "a", pairingKey: "Mac a")
+        #expect(m.sources.map(\.id) == ["b"])
+        #expect(m.settings.enabled == ["b"])
+        #expect(m.settings.config(for: "a") == SourceConfig())
+        #expect(SourceSettings(store: store).enabled == ["b"])
+        #expect(pairing.codes == ["b": 2222])
+        wait("a leaves the mix") { bus.attachedCount == 1 }
+        // A source that isn't connected can be removed too.
+        m.remove(id: "zzz", pairingKey: "b")
+        #expect(pairing.codes.isEmpty)
+        m.disconnectAll()
+    }
+
+    @Test func removingTheMediaSourceHandsOverToTheNextEligibleOne() {
+        let (m, _, clock) = make()
+        let a = add(m, "a"), b = add(m, "b"), c = add(m, "c")
+        status(a, in: m); clock.t = 110
+        status(b, in: m); clock.t = 120
+        status(c, in: m, controls: false)
+        #expect(m.mediaSource === b)
+        m.remove(id: "b", pairingKey: "b")
+        #expect(m.mediaSource === a)
+        m.remove(id: "a", pairingKey: "a")
+        // c has no controls but is the only source left: the buttons still go to it.
+        #expect(m.mediaSource === c)
+        m.disconnectAll()
+    }
+
     @Test func disconnectAllKeepsTheSetThatComesBackAtLaunch() {
         let store = MemorySettingsStore()
         let (m, _, _) = make(store: store)

@@ -55,6 +55,7 @@ public final class LinuxRuntime {
     /// MPRIS media control; shared with dialog pause on this PC.
     public let media: MediaController
     private var control: ControlServer?
+    let statsBox = StatsBox()
 
     public init(config: LinuxConfig) throws {
         self.config = config
@@ -90,6 +91,8 @@ public final class LinuxRuntime {
             throw ConfigError("PulseAudio capture is only available on Linux; use --source tone here")
             #endif
         }
+        let box = statsBox
+        sender.onStats = { box.set($0) }
     }
 
     public func start() throws {
@@ -133,10 +136,12 @@ public final class LinuxRuntime {
             guard let dialog else { return unconfigured }
             dialog.toggle()
             return "ok: dialog pause \(dialog.controller.isEnabled ? "on" : "off")"
+        case "status --json", "json":
+            return statusJSON()
         case "status", "":
             return dialog?.statusText() ?? "dialog pause: not configured"
         default:
-            return "error: unknown command \"\(command)\" (on, off, toggle, status)"
+            return "error: unknown command \"\(command)\" (on, off, toggle, status, status --json)"
         }
     }
 }
