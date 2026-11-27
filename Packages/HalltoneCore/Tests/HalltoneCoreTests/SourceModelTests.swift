@@ -101,4 +101,10 @@ struct MediaSourceChooserTests {
         #expect(MediaSourceChooser.choose(tied, current: "b") == "b")
         #expect(MediaSourceChooser.choose(tied, current: "gone") == "a")
     }
+
+    @Test func memoryPairingStoreDeletesOnlyTheNamedCode() {
+        let store = MemoryPairingStore(codes: ["a": 1, "b": 2])
+        store.deletePairingCode(for: "a")
+        #expect(store.codes == ["b": 2])
+    }
 }

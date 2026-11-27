@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import HalltoneCore
 
 /// Pairing codes, one per Mac name.
 enum Keychain {
@@ -39,4 +40,9 @@ enum Keychain {
         ]
         SecItemDelete(query as CFDictionary)
     }
+}
+
+/// The Keychain behind the source manager's `PairingStore`.
+final class KeychainPairingStore: PairingStore {
+    func deletePairingCode(for key: String) { Keychain.delete(for: key) }
 }

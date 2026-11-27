@@ -203,9 +203,13 @@ private struct SourceRow: View {
                 set: { on in if on { model.connect(mac) } else { model.turnOff(mac.id) } }))
                 .labelsHidden()
         }
-        .swipeActions {
-            if mac.kind == .manual { Button("Remove", role: .destructive) { model.removeManual(mac) } }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button("Delete", role: .destructive) { model.delete(mac) }
             Button("Forget code") { model.forgetPairing(mac) }.tint(.orange)
+        }
+        .contextMenu {
+            Button("Forget pairing code") { model.forgetPairing(mac) }
+            Button("Delete", role: .destructive) { model.delete(mac) }
         }
     }
 }
