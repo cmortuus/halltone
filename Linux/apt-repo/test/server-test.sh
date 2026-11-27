@@ -117,7 +117,7 @@ git -C "$G" -c user.name=ci -c user.email=ci@example.invalid tag -a linux-v1.2.3
 chmod -R a+rX "$G"
 build_run() { runuser -u builder -- env HOME=/var/lib/halltone-build HALLTONE_GIT_REMOTE="$G" /usr/local/bin/halltone-build-main; }
 import_run() { runuser -u repo -- flock /var/lib/repo/reprepro.lock /usr/local/bin/halltone-build-import; }
-git_safe() { runuser -u builder -- env HOME=/var/lib/halltone-build git config --global --add safe.directory "$G"; }
+git_safe() { runuser -u builder -- env HOME=/var/lib/halltone-build git config --global --add safe.directory "$G/.git"; }
 git_safe
 build_run | tee /tmp/build1.out
 grep -q 'is linux-v1.2.3' /tmp/build1.out || fail "tagged commit was not skipped"
