@@ -18,19 +18,23 @@ import Glibc
 
     @Test func childOfAFullyBlockedThreadStartsUnblockedAndDiesOnSIGTERM() throws {
         guard FileManager.default.fileExists(atPath: "/proc/self/status") else { return }
-        var started: Spawn.Started?
-        var threadMaskAfter = sigset_t()
+        final class Out: @unchecked Sendable {   // written by the thread before `done`, read after
+            var started: Spawn.Started?
+            var threadMaskAfter = sigset_t()
+        }
+        let out = Out()
         let done = DispatchSemaphore(value: 0)
         let t = Thread {
             var all = sigset_t(); sigfillset(&all)
             pthread_sigmask(SIG_SETMASK, &all, nil)
-            started = try? Spawn.start("/bin/sleep", ["30"], captureStdout: false, captureStderr: false)
-            pthread_sigmask(SIG_SETMASK, nil, &threadMaskAfter)
+            out.started = try? Spawn.start("/bin/sleep", ["30"], captureStdout: false, captureStderr: false)
+            pthread_sigmask(SIG_SETMASK, nil, &out.threadMaskAfter)
             done.signal()
         }
         t.start()
         #expect(done.wait(timeout: .now() + 10) == .success)
-        let s = try #require(started)
+        var threadMaskAfter = out.threadMaskAfter
+        let s = try #require(out.started)
         defer { if s.process.isRunning { kill(s.process.processIdentifier, SIGKILL) } }
         #expect(sigismember(&threadMaskAfter, SIGTERM) == 1, "launching thread's own mask was not restored")
         let mask = try #require(Self.blockedMask(s.process.processIdentifier))
