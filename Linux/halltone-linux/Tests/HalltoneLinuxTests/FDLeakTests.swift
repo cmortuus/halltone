@@ -6,7 +6,7 @@ import Foundation
 /// second) until the process hit 1024 open files and capture and Avahi failed. They count
 /// `/proc/self/fd` (`/dev/fd` on a Mac). The leak was ~2 per call, so 300
 /// calls would grow the count by ~600; a bound of 25 absorbs other suites running at the same time.
-private func openFDs() -> Int? {
+func openFDs() -> Int? {
     for dir in ["/proc/self/fd", "/dev/fd"] {   // /dev/fd lets the same test run on a Mac
         if let n = try? FileManager.default.contentsOfDirectory(atPath: dir).count { return n }
     }
@@ -14,7 +14,7 @@ private func openFDs() -> Int? {
 }
 
 /// Lets reader threads and termination handlers finish, then reports the count.
-private func settledFDs() -> Int? {
+func settledFDs() -> Int? {
     var last = openFDs()
     for _ in 0..<20 {
         Thread.sleep(forTimeInterval: 0.1)
