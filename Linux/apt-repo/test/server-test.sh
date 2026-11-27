@@ -134,7 +134,7 @@ import_run | tee /tmp/import1.out
 curl -fsS $base/halltone/dists/stable/main/binary-amd64/Packages | grep -qx "Version: $want" || fail "Packages does not serve $want"
 ok "main build signed into the repo and served"
 build_run | tee /tmp/build3.out
-[ -z "$(ls /var/lib/halltone-build/outbox)" ] && [ ! -s /tmp/build3.out ] || fail "same commit built twice"
+if [ -n "$(ls /var/lib/halltone-build/outbox)" ] || [ -s /tmp/build3.out ]; then fail "same commit built twice"; fi
 ok "same commit not rebuilt"
 # A GitHub release import of an older version than a main build must not fail (halltone-repo-sync
 # runs under set -e and would retry the release forever).
