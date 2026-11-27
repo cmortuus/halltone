@@ -24,6 +24,18 @@ STREAMING = dict(IDLE, streaming=True, kbps=1612, pps=400,
                  media={"available": True, "player": "firefox", "status": "paused"})
 
 
+class PresenceTests(unittest.TestCase):
+    def labels(self, status):
+        return [i.get("label", "") for i in tray.build_menu(status)]
+
+    def test_shows_when_at_pc(self):
+        self.assertTrue(any("at this PC" in l for l in self.labels(dict(STREAMING, presence={"atPC": True, "inputRecent": True}))))
+
+    def test_hidden_when_away_or_unknown(self):
+        self.assertFalse(any("at this PC" in l for l in self.labels(dict(STREAMING, presence={"atPC": False}))))
+        self.assertFalse(any("at this PC" in l for l in self.labels(dict(STREAMING, presence={}))))
+
+
 class FakeDaemon:
     """Serves one reply per connection on a unix socket, like the real control socket."""
     def __init__(self, path, replies):

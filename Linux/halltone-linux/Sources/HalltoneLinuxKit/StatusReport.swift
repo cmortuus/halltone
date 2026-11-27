@@ -54,6 +54,13 @@ extension LinuxRuntime {
         }
         o["media"] = m
 
+        // Cached; unknown values are left out. `atPC` is what the phone sees as "user at the PC".
+        let pr = presence.current()
+        var u: [String: Any] = [:]
+        if let a = pr.atPC { u["atPC"] = a }
+        if let r = pr.inputRecent { u["inputRecent"] = r }
+        o["presence"] = u
+
         let data = (try? JSONSerialization.data(withJSONObject: o, options: [.sortedKeys])) ?? Data("{}".utf8)
         return String(decoding: data, as: UTF8.self)
     }

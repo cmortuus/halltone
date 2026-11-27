@@ -8,17 +8,25 @@ import HalltoneSenderCore
 /// whether it is playing; CONTROL play/pause/next/previous (and explicit pause/play) drive the
 /// chosen player; REMOTE_CONTROL pauses and resumes it through `RemoteControlCoordinator`
 /// (unless `allowRemoteControl` is off). Without one (no D-Bus), controls are unavailable and
-/// REMOTE_CONTROL answers `disabled`. Holds and "user at the PC" stay Mac-side features.
+/// REMOTE_CONTROL answers `disabled`. Holds stay a Mac-side feature; "user at the PC" comes from `PresenceMonitor`.
 public final class LinuxSender: SenderCore {
     public let media: MediaController?
+    public let presence: PresenceMonitor?
 
     public override convenience init(config: Config, source: @escaping () -> AudioSource) {
         self.init(config: config, media: nil, allowRemoteControl: false, source: source)
     }
 
-    public init(config: Config, media: MediaController?, allowRemoteControl: Bool, source: @escaping () -> AudioSource) {
+    public init(config: Config, media: MediaController?, presence: PresenceMonitor? = nil, allowRemoteControl: Bool,
+                source: @escaping () -> AudioSource) {
         self.media = media
+        self.presence = presence
         super.init(config: config, source: source)
+        // "User at the PC" / "recent input" (#34): cached reads, so the sender's queue never waits on D-Bus.
+        if let presence {
+            userAtMac = { presence.userAtPC() }
+            userInputRecent = { presence.inputRecent() }
+        }
         guard let media else {
             controlsAvailable = { false }
             remoteControlEnabled = { false }
@@ -62,6 +70,8 @@ public final class LinuxRuntime {
     public let dialog: DialogPauseService?
     /// MPRIS media control; shared with dialog pause on this PC.
     public let media: MediaController
+    /// Idle / lock state of the desktop, reported in STATUS as the Mac's "user at Mac" flags.
+    public let presence: PresenceMonitor
     private var control: ControlServer?
     let statsBox = StatsBox()
 
@@ -73,6 +83,9 @@ public final class LinuxRuntime {
         let device = config.pulseDevice
         let media = MediaController(pin: config.media.player, ignore: config.media.ignore)
         self.media = media
+        let box = statsBox
+        let presence = PresenceMonitor(wanted: { !box.get().subscribers.isEmpty })
+        self.presence = presence
         let service = config.dialogPause.isConfigured
             ? DialogPauseService(settings: config.dialogPause, selfName: config.name, media: media) : nil
         dialog = service
@@ -80,18 +93,18 @@ public final class LinuxRuntime {
         let tap = service?.captureTap
         switch kind {
         case .tone:
-            sender = LinuxSender(config: config.senderConfig(), media: media, allowRemoteControl: allow) { ToneSource(blockFrames: tone) }
+            sender = LinuxSender(config: config.senderConfig(), media: media, presence: presence, allowRemoteControl: allow) { ToneSource(blockFrames: tone) }
         case .wav(let path):
             _ = try WavSource(path: path)   // fail at start-up, not at the first subscriber
             let block = fragment
-            sender = LinuxSender(config: config.senderConfig(), media: media, allowRemoteControl: allow) {
+            sender = LinuxSender(config: config.senderConfig(), media: media, presence: presence, allowRemoteControl: allow) {
                 // A fresh player each time capture starts; the file was checked above.
                 let wav: AudioSource? = try? WavSource(path: path, blockFrames: block, tap: tap)
                 return wav ?? ToneSource(amplitude: 0)
             }
         case .pulse:
             #if canImport(CPulseSimple)
-            sender = LinuxSender(config: config.senderConfig(), media: media, allowRemoteControl: allow) {
+            sender = LinuxSender(config: config.senderConfig(), media: media, presence: presence, allowRemoteControl: allow) {
                 PulseSource(device: device, fragmentFrames: fragment, tap: tap)
             }
             #else
@@ -99,7 +112,6 @@ public final class LinuxRuntime {
             throw ConfigError("PulseAudio capture is only available on Linux; use --source tone here")
             #endif
         }
-        let box = statsBox
         sender.onStats = { box.set($0) }
     }
 

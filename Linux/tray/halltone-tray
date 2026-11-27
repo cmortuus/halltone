@@ -146,6 +146,8 @@ def build_menu(status, note=None):
     media = status.get("media") or {}
     if media.get("player"):
         m.append(item("label", "Media: %s (%s)" % (media["player"], media.get("status", "?")), enabled=False))
+    if (status.get("presence") or {}).get("atPC"):
+        m.append(item("label", "You're at this PC (phone Auto uses lowest latency)", enabled=False))
     m += [item("separator"),
           item("action", "Restart Halltone", "restart"),
           item("action", "Show logs", "logs"),
