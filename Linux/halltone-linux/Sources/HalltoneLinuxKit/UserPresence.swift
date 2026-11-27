@@ -16,9 +16,12 @@ public struct PresenceSample: Equatable {
     public var locked: Bool?
     /// logind's `IdleHint` for this session: the coarse fallback when there is no idle time.
     public var sessionIdle: Bool?
+    /// Something holds an idle inhibitor (a game, Steam/Proton, a video player). Gamepad input never
+    /// reaches Mutter's idle time, so a running game is how controller-only play shows up.
+    public var idleInhibited: Bool?
 
-    public init(idleSeconds: TimeInterval? = nil, locked: Bool? = nil, sessionIdle: Bool? = nil) {
-        self.idleSeconds = idleSeconds; self.locked = locked; self.sessionIdle = sessionIdle
+    public init(idleSeconds: TimeInterval? = nil, locked: Bool? = nil, sessionIdle: Bool? = nil, idleInhibited: Bool? = nil) {
+        self.idleSeconds = idleSeconds; self.locked = locked; self.sessionIdle = sessionIdle; self.idleInhibited = idleInhibited
     }
 }
 
@@ -35,11 +38,14 @@ public struct Presence: Equatable {
     /// Same rules as the Mac, with what Linux can know.
     public init(_ s: PresenceSample) {
         if s.locked == true { self.init(inputRecent: false, atPC: false); return }
+        let inhibited = s.idleInhibited == true
         if let idle = s.idleSeconds {
+            // `inputRecent` stays what the keyboard and mouse say; an idle inhibitor only keeps "at the PC".
             self.init(inputRecent: idle < Self.recentInputLimit,
-                      atPC: idle < Self.idleLimit ? true : (s.locked == nil ? nil : false))
+                      atPC: (idle < Self.idleLimit || inhibited) ? true : (s.locked == nil ? nil : false))
             return
         }
+        if inhibited { self.init(inputRecent: nil, atPC: true); return }
         // No idle time (not GNOME): logind's session IdleHint says "idle for a while" or not. It can't
         // say input was in the last 20 s, so that flag stays unknown.
         if let hint = s.sessionIdle { self.init(inputRecent: nil, atPC: hint ? false : (s.locked == nil ? nil : true)); return }
@@ -74,6 +80,14 @@ public final class BusctlPresenceBackend: PresenceBackend {
                           "org.gnome.ScreenSaver", "GetActive"]) {
             s.locked = Self.bool(out)
         }
+        // Idle inhibitor: GNOME's session manager (flag 8 = idle), else logind's inhibitor list.
+        if let out = run(["--user", "call", "org.gnome.SessionManager", "/org/gnome/SessionManager",
+                          "org.gnome.SessionManager", "IsInhibited", "u", "8"]) {
+            s.idleInhibited = Self.bool(out)
+        } else if let out = run(["--system", "call", "org.freedesktop.login1", "/org/freedesktop/login1",
+                                 "org.freedesktop.login1.Manager", "ListInhibitors"]) {
+            s.idleInhibited = Self.userIdleInhibitor(out, uid: UInt32(getuid()))
+        }
         // logind: only asked for what GNOME didn't answer. `auto` is the caller's own session.
         if s.locked == nil, let out = logind("LockedHint") { s.locked = Self.bool(out) }
         if s.idleSeconds == nil, let out = logind("IdleHint") { s.sessionIdle = Self.bool(out) }
@@ -95,6 +109,32 @@ public final class BusctlPresenceBackend: PresenceBackend {
         let parts = output.split(whereSeparator: { $0 == " " || $0 == "\n" })
         guard parts.count == 2, parts[0] == "t" else { return nil }
         return Double(parts[1])
+    }
+
+    /// busctl's `ListInhibitors` reply (`a(ssssuu) 2 "what" "who" "why" "mode" uid pid …`): is there a
+    /// blocking inhibitor of idle or sleep held by one of this user's processes?
+    static func userIdleInhibitor(_ output: String, uid: UInt32) -> Bool? {
+        var tokens: [String] = []
+        var cur = "", inQuote = false, escaped = false
+        for ch in output {
+            if inQuote {
+                if escaped { cur.append(ch); escaped = false }
+                else if ch == "\\" { escaped = true }
+                else if ch == "\"" { tokens.append("\"" + cur); cur = ""; inQuote = false }
+                else { cur.append(ch) }
+            } else if ch == "\"" { inQuote = true }
+            else if ch == " " || ch == "\n" { if !cur.isEmpty { tokens.append(cur); cur = "" } }
+            else { cur.append(ch) }
+        }
+        guard tokens.count >= 2, tokens[0] == "a(ssssuu)", let n = Int(tokens[1]) else { return nil }
+        let rest = Array(tokens.dropFirst(2))
+        guard rest.count >= n * 6 else { return nil }
+        for i in 0..<n {
+            let e = Array(rest[(i * 6)..<(i * 6 + 6)])
+            let what = e[0].dropFirst().split(separator: ":"), mode = e[3].dropFirst()
+            if mode == "block", UInt32(e[4]) == uid, what.contains(where: { $0 == "idle" || $0 == "sleep" }) { return true }
+        }
+        return false
     }
 
     /// `b true` → true.

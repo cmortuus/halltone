@@ -48,6 +48,31 @@ struct PresenceRulesTests {
     @Test func nothingAvailableIsUnknownNotAway() {
         #expect(Presence(PresenceSample()) == Presence(inputRecent: nil, atPC: nil))
     }
+    @Test func inhibitorKeepsAtPCAfterTenMinutesIdle() {
+        // Controller-only play: no keyboard/mouse input, but the game holds an idle inhibitor.
+        let p = Presence(PresenceSample(idleSeconds: 600, locked: false, idleInhibited: true))
+        #expect(p == Presence(inputRecent: false, atPC: true))
+        #expect(Presence(PresenceSample(idleSeconds: 600, idleInhibited: true)).atPC == true)   // lock unknown
+    }
+    @Test func lockedWithInhibitorIsStillAway() {
+        #expect(Presence(PresenceSample(idleSeconds: 600, locked: true, idleInhibited: true)) == Presence(inputRecent: false, atPC: false))
+    }
+    @Test func noInhibitorKeepsTheOldBehavior() {
+        #expect(Presence(PresenceSample(idleSeconds: 600, locked: false, idleInhibited: false)) == Presence(inputRecent: false, atPC: false))
+        #expect(Presence(PresenceSample(idleSeconds: 600, locked: false, idleInhibited: nil)) == Presence(inputRecent: false, atPC: false))
+    }
+    @Test func inhibitorDoesNotMakeInputRecent() {
+        #expect(Presence(PresenceSample(idleSeconds: 90, locked: false, idleInhibited: true)).inputRecent == false)
+    }
+    @Test func logindInhibitorListParsing() {
+        let game = "a(ssssuu) 2 \"idle\" \"Steam\" \"Playing\" \"block\" 1000 4242 \"sleep:shutdown\" \"gdm\" \"x\" \"delay\" 0 99\n"
+        #expect(BusctlPresenceBackend.userIdleInhibitor(game, uid: 1000) == true)
+        #expect(BusctlPresenceBackend.userIdleInhibitor(game, uid: 1001) == false)   // someone else's
+        let delayOnly = "a(ssssuu) 1 \"sleep\" \"x\" \"y\" \"delay\" 1000 5\n"
+        #expect(BusctlPresenceBackend.userIdleInhibitor(delayOnly, uid: 1000) == false)
+        #expect(BusctlPresenceBackend.userIdleInhibitor("a(ssssuu) 0\n", uid: 1000) == false)
+        #expect(BusctlPresenceBackend.userIdleInhibitor("garbage", uid: 1000) == nil)
+    }
     @Test func parsesBusctlReplies() {
         #expect(BusctlPresenceBackend.number("t 12345\n") == 12345)
         #expect(BusctlPresenceBackend.number("s \"x\"\n") == nil)
@@ -154,6 +179,7 @@ final class TestClock {
         case "$*" in
           *GetIdletime*) echo "t 2000" ;;
           *GetActive*) echo "b false" ;;
+          *IsInhibited*) echo "b true" ;;
           *) echo "b false" ;;
         esac
         """
@@ -166,6 +192,7 @@ final class TestClock {
         let (dir, path) = try fakeBusctl(); defer { try? FileManager.default.removeItem(atPath: dir) }
         let p = Presence(BusctlPresenceBackend(executable: path, timeout: 5).sample())
         #expect(p == Presence(inputRecent: true, atPC: true))
+        #expect(BusctlPresenceBackend(executable: path, timeout: 5).sample().idleInhibited == true)
     }
 
     @Test func monitorDoesNotLeakDescriptorsAcrossManyRefreshes() throws {
@@ -231,8 +258,8 @@ struct PresenceDBusTests {
                 throw ConfigError("fake GNOME presence service not ready after 20 s")
             }
         }
-        func set(idleMs: Int, locked: Bool) {
-            try? "\(idleMs)\n\(locked ? "locked" : "unlocked")\n".write(toFile: state, atomically: true, encoding: .utf8)
+        func set(idleMs: Int, locked: Bool, inhibited: Bool = false) {
+            try? "\(idleMs)\n\(locked ? "locked" : "unlocked")\n\(inhibited ? "inhibited" : "free")\n".write(toFile: state, atomically: true, encoding: .utf8)
         }
         func stop() {
             if process.isRunning { kill(process.processIdentifier, SIGKILL) }
@@ -250,6 +277,13 @@ struct PresenceDBusTests {
         g.set(idleMs: 400_000, locked: false)
         #expect(Presence(b.sample()) == Presence(inputRecent: false, atPC: false))
         g.set(idleMs: 500, locked: true)
+        #expect(Presence(b.sample()) == Presence(inputRecent: false, atPC: false))
+        // A game holding an idle inhibitor (controller-only play): 10 minutes idle is still "at the PC".
+        g.set(idleMs: 600_000, locked: false, inhibited: true)
+        #expect(Presence(b.sample()) == Presence(inputRecent: false, atPC: true))
+        g.set(idleMs: 600_000, locked: true, inhibited: true)
+        #expect(Presence(b.sample()) == Presence(inputRecent: false, atPC: false))
+        g.set(idleMs: 600_000, locked: false, inhibited: false)
         #expect(Presence(b.sample()) == Presence(inputRecent: false, atPC: false))
     }
 
