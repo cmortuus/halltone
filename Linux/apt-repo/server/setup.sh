@@ -2,6 +2,8 @@
 # Sets up (or re-converges) the Halltone LAN apt repo server on a Debian 12 container:
 #   - reprepro repo at /srv/apt/halltone (suite stable), signed by a key that only lives here
 #   - halltone-repo-sync + 15-minute timer importing linux-v* GitHub releases (SHA256SUMS-checked)
+#   - halltone-build-main + 5-minute timer building each new main commit (amd64) as user builder,
+#     signed in by halltone-build-import (user repo); Swift toolchain in /opt/swift
 #   - halltone-logrx, the LAN log receiver, behind nginx at /halltone-logs/<kind>
 #   - nginx on :80, and the desktop installer published at /install-halltone.sh
 #
@@ -17,6 +19,11 @@ INSTALLER_SRC="${INSTALLER_SRC:-$HERE/../../install-halltone.sh}"
 R=/srv/apt/halltone
 GNUPGHOME=/var/lib/repo/.gnupg
 TOKEN_FILE=/etc/halltone-logrx/token
+# The Swift used to build main: same release as CI's swift:6.1-noble image, Debian 12 build,
+# checked against the Swift 6.x release signing key.
+SWIFT_VERSION=6.1.3
+SWIFT_KEY_FPR=52BB7E3DE28A71BE22EC05FFEF80A866B47A981F
+B=/var/lib/halltone-build
 
 say() { printf '\n==> %s\n' "$*"; }
 [ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }
@@ -34,6 +41,10 @@ repo_run() { runuser -u repo -- env GNUPGHOME="$GNUPGHOME" "$@"; }
 say "Packages"
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends reprepro gnupg nginx curl jq python3 ca-certificates openssl >/dev/null
+# Building halltone-linux: Swift's own runtime needs, then build-deb.sh's.
+apt-get install -y -qq --no-install-recommends git binutils libc6-dev libcurl4-openssl-dev libedit2 libgcc-12-dev \
+  libpython3-dev libsqlite3-0 libstdc++-12-dev libxml2-dev libz3-dev zlib1g-dev tzdata unzip \
+  pkg-config libpulse-dev dpkg-dev util-linux >/dev/null
 
 say "Users and directories"
 id repo >/dev/null 2>&1 || useradd --system --create-home --home-dir /var/lib/repo --shell /usr/sbin/nologin repo
@@ -42,6 +53,32 @@ mkdir -p "$R/conf" /var/lib/repo/state
 chown -R repo:repo /srv/apt /var/lib/repo
 install -d -o halltonelog -g halltonelog -m 750 /var/log/halltone-clients
 install -d -m 755 /etc/halltone-logrx
+id builder >/dev/null 2>&1 || useradd --system --create-home --home-dir "$B" --shell /usr/sbin/nologin builder
+usermod -a -G builder repo   # the importer removes what it signed in from the outbox
+install -d -o builder -g builder -m 755 "$B" "$B/state"
+install -d -o builder -g builder -m 2775 "$B/outbox"
+touch /var/lib/repo/reprepro.lock; chown repo:repo /var/lib/repo/reprepro.lock
+
+say "Swift $SWIFT_VERSION toolchain (/opt/swift)"
+if [ -n "${HALLTONE_SKIP_SWIFT:-}" ]; then
+  echo "HALLTONE_SKIP_SWIFT set: skipping (CI)"
+elif [ -x /opt/swift/usr/bin/swift ] && /opt/swift/usr/bin/swift --version 2>/dev/null | grep -q "Swift version $SWIFT_VERSION "; then
+  echo "already installed"
+else
+  sw=$(mktemp -d)
+  base="https://download.swift.org/swift-$SWIFT_VERSION-release/debian12/swift-$SWIFT_VERSION-RELEASE/swift-$SWIFT_VERSION-RELEASE-debian12.tar.gz"
+  curl -fsSL -o "$sw/swift.tar.gz" "$base"
+  curl -fsSL -o "$sw/swift.tar.gz.sig" "$base.sig"
+  curl -fsSL -o "$sw/keys.asc" https://www.swift.org/keys/all-keys.asc
+  gpg --batch --no-default-keyring --keyring "$sw/swift.kbx" --import "$sw/keys.asc" 2>/dev/null
+  gpg --batch --no-default-keyring --keyring "$sw/swift.kbx" --export "$SWIFT_KEY_FPR" > "$sw/key.gpg"
+  [ -s "$sw/key.gpg" ] || { echo "Swift signing key $SWIFT_KEY_FPR not in all-keys.asc" >&2; exit 1; }
+  gpgv --keyring "$sw/key.gpg" "$sw/swift.tar.gz.sig" "$sw/swift.tar.gz" || { echo "Swift toolchain signature check failed" >&2; exit 1; }
+  rm -rf /opt/swift.new; mkdir -p /opt/swift.new
+  tar -xzf "$sw/swift.tar.gz" -C /opt/swift.new --strip-components=1
+  rm -rf /opt/swift; mv /opt/swift.new /opt/swift; rm -rf "$sw"
+  /opt/swift/usr/bin/swift --version
+fi
 
 say "Signing key (kept if present)"
 # No passphrase: signing runs unattended; the key never leaves this container (see the README to back it up).
@@ -64,7 +101,7 @@ Suite: stable
 Codename: stable
 Architectures: amd64 arm64 i386 armhf
 Components: main
-Description: Halltone Linux sender (built by GitHub Actions, imported from releases)
+Description: Halltone Linux sender (releases from GitHub Actions; main builds made here)
 SignWith: $FPR
 DIST
 printf 'verbose\nbasedir %s\n' "$R" > "${conf}.opt"
@@ -77,6 +114,13 @@ say "Release importer"
 put "$HERE/halltone-repo-sync" /usr/local/bin/halltone-repo-sync 755
 put "$HERE/systemd/halltone-repo-sync.service" /etc/systemd/system/halltone-repo-sync.service 644
 put "$HERE/systemd/halltone-repo-sync.timer" /etc/systemd/system/halltone-repo-sync.timer 644
+
+say "main builder"
+put "$HERE/halltone-build-main" /usr/local/bin/halltone-build-main 755
+put "$HERE/halltone-build-import" /usr/local/bin/halltone-build-import 755
+for u in halltone-build.service halltone-build-import.service halltone-build.timer; do
+  put "$HERE/systemd/$u" "/etc/systemd/system/$u" 644
+done
 
 say "Log receiver"
 if [ ! -s "$TOKEN_FILE" ]; then
@@ -107,12 +151,14 @@ say "Services"
 if have_systemd; then
   systemctl daemon-reload
   systemctl enable --now halltone-repo-sync.timer
+  if [ -x /opt/swift/usr/bin/swift ]; then systemctl enable --now halltone-build.timer; else systemctl disable --now halltone-build.timer 2>/dev/null || true; fi
   systemctl enable halltone-logrx >/dev/null
   if [ "$logrx_changed" = 1 ]; then systemctl restart halltone-logrx; else systemctl start halltone-logrx; fi
   systemctl enable nginx >/dev/null
   systemctl reload-or-restart nginx
   sleep 1
   systemctl is-active halltone-logrx nginx halltone-repo-sync.timer
+  [ ! -x /opt/swift/usr/bin/swift ] || systemctl is-active halltone-build.timer
 else
   echo "systemd is not running here (CI container?): units installed but not started."
 fi

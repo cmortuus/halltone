@@ -1,0 +1,17 @@
+#!/bin/bash
+# Signs .debs built by halltone-build-main into the reprepro repo. Runs as `repo` (the only user
+# with the signing key) after each successful build; also safe to run by hand:
+#   sudo runuser -u repo -- /usr/local/bin/halltone-build-import
+set -euo pipefail
+export LC_ALL=C.UTF-8 GNUPGHOME=/var/lib/repo/.gnupg
+R=/srv/apt/halltone
+OUTBOX=/var/lib/halltone-build/outbox
+shopt -s nullglob
+for deb in "$OUTBOX"/halltone-linux_*_amd64.deb; do
+  name=$(basename "$deb")
+  [[ "$name" =~ ^halltone-linux_[0-9][0-9A-Za-z.+~-]*_amd64\.deb$ ]] || { echo "skipping odd name $name" >&2; continue; }
+  [ "$(dpkg-deb --field "$deb" Package)" = halltone-linux ] || { echo "$name is not halltone-linux" >&2; rm -f "$deb"; continue; }
+  reprepro -b "$R" includedeb stable "$deb"
+  rm -f "$deb"
+  echo "$name: imported"
+done

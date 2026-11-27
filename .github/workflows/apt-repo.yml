@@ -30,7 +30,8 @@ jobs:
       - name: shellcheck
         run: |
           shellcheck Linux/install-halltone.sh Linux/apt-repo/server/setup.sh Linux/apt-repo/server/halltone-repo-sync \
-                     Linux/apt-repo/server/halltone-publish-installer Linux/apt-repo/test/*.sh
+                     Linux/apt-repo/server/halltone-publish-installer Linux/apt-repo/server/halltone-build-main \
+                     Linux/apt-repo/server/halltone-build-import Linux/apt-repo/test/*.sh
       - name: python compiles
         run: |
           python3 -m py_compile Linux/apt-repo/server/halltone-logrx Linux/apt-repo/test/fake-server.py
