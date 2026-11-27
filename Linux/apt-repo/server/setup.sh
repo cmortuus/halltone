@@ -42,7 +42,7 @@ say "Packages"
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends reprepro gnupg nginx curl jq python3 ca-certificates openssl >/dev/null
 # Building halltone-linux: Swift's own runtime needs, then build-deb.sh's.
-apt-get install -y -qq --no-install-recommends git binutils libc6-dev libcurl4-openssl-dev libedit2 libgcc-12-dev \
+apt-get install -y -qq --no-install-recommends git binutils libc6-dev libcurl4-openssl-dev libedit2 libncurses6 libgcc-12-dev \
   libpython3-dev libsqlite3-0 libstdc++-12-dev libxml2-dev libz3-dev zlib1g-dev tzdata unzip \
   pkg-config libpulse-dev dpkg-dev util-linux >/dev/null
 
