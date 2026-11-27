@@ -44,7 +44,7 @@ for _ in $(seq 50); do curl -s -o /dev/null "http://127.0.0.1:$PORT/" && break; 
 useradd -m -s /bin/bash tester
 echo 'tester ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/tester
 export HALLTONE_SERVER="http://127.0.0.1:$PORT" HALLTONE_FINGERPRINT="$FPR"
-as_tester() { runuser -u tester -- env HOME=/home/tester USER=tester LOGNAME=tester HALLTONE_SERVER="$HALLTONE_SERVER" HALLTONE_FINGERPRINT="${FPR_OVERRIDE:-$HALLTONE_FINGERPRINT}" "$@"; }
+as_tester() { runuser -u tester -- env -u GNUPGHOME HOME=/home/tester USER=tester LOGNAME=tester HALLTONE_SERVER="$HALLTONE_SERVER" HALLTONE_FINGERPRINT="${FPR_OVERRIDE:-$HALLTONE_FINGERPRINT}" "$@"; }
 # An installed copy as the owner would have it: the git file with an old token substituted.
 fresh_copy() { sed "s|^LOG_TOKEN=\"__LOG_TOKEN__\"\$|LOG_TOKEN=\"old-token\"|" "$INSTALLER" > /home/tester/install-halltone.sh; chown tester:tester /home/tester/install-halltone.sh; chmod 755 /home/tester/install-halltone.sh; }
 
