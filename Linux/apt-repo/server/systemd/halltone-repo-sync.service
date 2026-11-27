@@ -1,0 +1,8 @@
+[Unit]
+Description=Import new Halltone releases from GitHub into the apt repo
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+User=repo
+ExecStart=/usr/local/bin/halltone-repo-sync

@@ -1,0 +1,25 @@
+#!/bin/bash
+# Imports new halltone-linux releases (tags linux-v*) from GitHub into the reprepro repo.
+# Each .deb must be listed in the release's SHA256SUMS and match it, or nothing is imported.
+# Runs as the `repo` user from halltone-repo-sync.timer; safe to run by hand:
+#   sudo runuser -u repo -- /usr/local/bin/halltone-repo-sync
+set -euo pipefail
+export LC_ALL=C.UTF-8 GNUPGHOME=/var/lib/repo/.gnupg
+R=/srv/apt/halltone
+STATE=/var/lib/repo/state
+API="${HALLTONE_RELEASES_API:-https://api.github.com/repos/cmortuus/halltone/releases?per_page=30}"  # override: tests only
+releases=$(curl -fsSL -H 'Accept: application/vnd.github+json' "$API")
+echo "$releases" | jq -r '.[] | select(.tag_name|startswith("linux-v")) | select(.draft|not) | .tag_name' | tac | while read -r tag; do
+  [ -e "$STATE/$tag.done" ] && continue
+  work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+  echo "$releases" | jq -r --arg t "$tag" '.[] | select(.tag_name==$t) | .assets[] | select((.name|test("^halltone-linux_[^/]+_(amd64|arm64)\\.deb$")) or .name=="SHA256SUMS") | "\(.name)\t\(.browser_download_url)"' |
+    while IFS=$'\t' read -r name url; do curl -fsSL -o "$work/$name" "$url"; done
+  if [ ! -f "$work/SHA256SUMS" ] || ! ls "$work"/*.deb >/dev/null 2>&1; then echo "$tag: no SHA256SUMS/.deb assets yet, skipping"; rm -rf "$work"; continue; fi
+  (cd "$work" && sha256sum --check --ignore-missing --strict SHA256SUMS)
+  for deb in "$work"/*.deb; do
+    grep -q " $(basename "$deb")\$\|  $(basename "$deb")\$" "$work/SHA256SUMS" || { echo "$deb not listed in SHA256SUMS"; exit 1; }
+    reprepro -b "$R" includedeb stable "$deb"
+  done
+  touch "$STATE/$tag.done"; echo "$tag: imported"
+  rm -rf "$work"; trap - EXIT
+done

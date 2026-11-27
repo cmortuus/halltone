@@ -1,0 +1,63 @@
+name: apt repo + installer
+
+# The LAN apt repo server (Linux/apt-repo/) and the desktop installer (Linux/install-halltone.sh).
+# Nothing here touches the real server: everything runs against throwaway containers.
+
+on:
+  pull_request:
+    paths:
+      - "Linux/apt-repo/**"
+      - "Linux/install-halltone.sh"
+      - ".github/workflows/apt-repo.yml"
+  push:
+    branches: [main]
+    paths:
+      - "Linux/apt-repo/**"
+      - "Linux/install-halltone.sh"
+      - ".github/workflows/apt-repo.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: apt-repo-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shellcheck:
+    name: shellcheck + syntax
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          shellcheck Linux/install-halltone.sh Linux/apt-repo/server/setup.sh Linux/apt-repo/server/halltone-repo-sync \
+                     Linux/apt-repo/server/halltone-publish-installer Linux/apt-repo/test/*.sh
+      - name: python compiles
+        run: |
+          python3 -m py_compile Linux/apt-repo/server/halltone-logrx Linux/apt-repo/test/fake-server.py
+      - name: no secrets in git
+        run: |
+          # The installer must carry the placeholder, never a token; no private keys anywhere in these dirs.
+          grep -q '^LOG_TOKEN="__LOG_TOKEN__"$' Linux/install-halltone.sh
+          if grep -rE 'BEGIN PGP PRIVATE KEY|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY' Linux/apt-repo Linux/install-halltone.sh; then exit 1; fi
+
+  server-setup:
+    name: setup.sh twice on Debian 12 + importer
+    runs-on: ubuntu-24.04
+    container: debian:12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare (no daemons started by package installs)
+        run: |
+          printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d; chmod 755 /usr/sbin/policy-rc.d
+          apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates >/dev/null
+      - name: setup.sh, importer, nginx, log receiver, published installer
+        run: Linux/apt-repo/test/server-test.sh
+
+  installer:
+    name: install-halltone.sh on clean Ubuntu 24.04
+    runs-on: ubuntu-24.04
+    container: ubuntu:24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install, self-update, upgrade, guards
+        run: Linux/apt-repo/test/installer-test.sh
