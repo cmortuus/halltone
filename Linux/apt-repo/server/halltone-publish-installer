@@ -1,0 +1,43 @@
+#!/bin/bash
+# Publishes the desktop installer from the server so machines can `curl` it and self-update:
+#   /srv/apt/install-halltone.sh        the installer, with the log token substituted in
+#   /srv/apt/install-halltone.sh.asc    detached signature by the repo key (installers verify it)
+#   /srv/apt/install-halltone.desktop   double-click launcher for Ubuntu desktops
+# Usage (root): halltone-publish-installer [path/to/install-halltone.sh]
+# The git copy carries a placeholder instead of the token; the token is read from
+# /etc/halltone-logrx/token here and never goes into git.
+set -euo pipefail
+export LC_ALL=C.UTF-8
+SRC="${1:-/usr/local/share/halltone/install-halltone.sh}"
+LAUNCHER="${2:-/usr/local/share/halltone/install-halltone.desktop}"
+WEB="${HALLTONE_WEBROOT:-/srv/apt}"
+TOKEN_FILE="${HALLTONE_TOKEN_FILE:-/etc/halltone-logrx/token}"
+GNUPGHOME="${HALLTONE_GNUPGHOME:-/var/lib/repo/.gnupg}"
+export GNUPGHOME
+
+[ "$(id -u)" -eq 0 ] || { echo "run as root" >&2; exit 1; }
+token=$(tr -d '\n' < "$TOKEN_FILE")
+[[ "$token" =~ ^[A-Za-z0-9._~+=-]{16,}$ ]] || { echo "token in $TOKEN_FILE missing, too short, or has unsafe characters" >&2; exit 1; }
+grep -q '^LOG_TOKEN="__LOG_TOKEN__"$' "$SRC" || { echo "$SRC has no LOG_TOKEN placeholder line" >&2; exit 1; }
+
+stage=$(mktemp -d "$WEB/.publish.XXXXXX")
+trap 'rm -rf "$stage"' EXIT
+sed "s|^LOG_TOKEN=\"__LOG_TOKEN__\"\$|LOG_TOKEN=\"$token\"|" "$SRC" > "$stage/install-halltone.sh"
+if grep -q '__LOG_TOKEN__' "$stage/install-halltone.sh"; then echo "placeholder still present after substitution" >&2; exit 1; fi
+bash -n "$stage/install-halltone.sh"
+cp "$LAUNCHER" "$stage/install-halltone.desktop"
+chmod 755 "$stage"; chmod 644 "$stage"/*
+chown repo:repo "$stage" "$stage"/*
+
+fpr=$(runuser -u repo -- env GNUPGHOME="$GNUPGHOME" gpg --list-secret-keys --with-colons | awk -F: '/^fpr/{print $10; exit}')
+[ -n "$fpr" ] || { echo "no signing key for user repo" >&2; exit 1; }
+runuser -u repo -- env GNUPGHOME="$GNUPGHOME" gpg --batch --yes --pinentry-mode loopback --passphrase '' \
+  --local-user "$fpr" --armor --detach-sign -o "$stage/install-halltone.sh.asc" "$stage/install-halltone.sh"
+
+# Script first, signature right after; a client that lands in between fails verification and
+# simply skips self-update that run.
+chmod 755 "$stage/install-halltone.sh"
+mv -f "$stage/install-halltone.sh" "$WEB/install-halltone.sh"
+mv -f "$stage/install-halltone.sh.asc" "$WEB/install-halltone.sh.asc"
+mv -f "$stage/install-halltone.desktop" "$WEB/install-halltone.desktop"
+echo "published $WEB/install-halltone.sh (+ .asc, install-halltone.desktop)"

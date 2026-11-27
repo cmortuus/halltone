@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+"""Receives log uploads from Halltone machines on the LAN (POST /halltone-logs/<kind>).
+Headers: X-Halltone-Log-Token (shared secret), X-Halltone-Host. Body: plain text, <= 5 MB.
+Stored as /var/log/halltone-clients/<host>/<kind>-YYYY-MM-DD.log; each host is capped at 200 MB.
+
+Listens on 127.0.0.1:8082; nginx proxies /halltone-logs/ to it. The HALLTONE_LOGRX_* environment
+variables exist for tests only; the systemd unit leaves them unset."""
+import datetime, hmac, os, re, sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+ROOT = os.environ.get("HALLTONE_LOGRX_ROOT", "/var/log/halltone-clients")
+TOKEN = open(os.environ.get("HALLTONE_LOGRX_TOKEN_FILE", "/etc/halltone-logrx/token")).read().strip()
+PORT = int(os.environ.get("HALLTONE_LOGRX_PORT", "8082"))
+MAX_BODY, HOST_CAP = 5 * 1024 * 1024, 200 * 1024 * 1024
+SAFE = re.compile(r"[^A-Za-z0-9._-]")
+
+if not TOKEN:
+    sys.exit("halltone-logrx: empty token file; refusing to start")
+
+
+def trim(d):
+    files = sorted((os.path.join(d, f) for f in os.listdir(d)), key=os.path.getmtime)
+    total = sum(os.path.getsize(f) for f in files)
+    while files and total > HOST_CAP:
+        f = files.pop(0); total -= os.path.getsize(f); os.remove(f)
+
+
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        m = re.fullmatch(r"/halltone-logs/([a-z0-9-]{1,32})", self.path)
+        if not m: return self.send_error(404)
+        if not hmac.compare_digest(self.headers.get("X-Halltone-Log-Token", ""), TOKEN): return self.send_error(403)
+        n = int(self.headers.get("Content-Length") or 0)
+        if n <= 0 or n > MAX_BODY: return self.send_error(413)
+        body = self.rfile.read(n)
+        host = SAFE.sub("_", self.headers.get("X-Halltone-Host", "") or self.client_address[0])[:64] or "unknown"
+        d = os.path.join(ROOT, host); os.makedirs(d, exist_ok=True)
+        now = datetime.datetime.now()
+        with open(os.path.join(d, f"{m.group(1)}-{now:%Y-%m-%d}.log"), "ab") as f:
+            f.write(f"===== upload {now:%Y-%m-%dT%H:%M:%S} from {self.headers.get('X-Forwarded-For', self.client_address[0])} =====\n".encode())
+            f.write(body if body.endswith(b"\n") else body + b"\n")
+        trim(d)
+        self.send_response(204); self.end_headers()
+
+    def log_message(self, fmt, *a):
+        sys.stderr.write("%s %s\n" % (self.headers.get("X-Halltone-Host", "-") if hasattr(self, "headers") else "-", fmt % a))
+
+
+ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()

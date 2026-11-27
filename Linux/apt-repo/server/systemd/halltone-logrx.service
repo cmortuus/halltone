@@ -1,0 +1,14 @@
+[Unit]
+Description=Halltone LAN log receiver
+After=network.target
+[Service]
+User=halltonelog
+ExecStart=/usr/local/bin/halltone-logrx
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/log/halltone-clients
+ProtectHome=yes
+PrivateTmp=yes
+[Install]
+WantedBy=multi-user.target
