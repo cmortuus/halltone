@@ -2,7 +2,14 @@
 Type=Application
 Name=Install / update Halltone
 Comment=Install or upgrade the Halltone sender from the LAN apt repo
-Exec=sh -c 'curl -fsSL http://apt.localdomain/install-halltone.sh | bash; echo; printf "Press Enter to close. "; read -r _'
+# Downloads install-halltone.sh and its .asc, and runs it only if the signature checks out:
+# against the installed repo keyring when there is one, otherwise (or if that fails, e.g. after a
+# key change) against the served key once its fingerprint matches the pinned one, like the
+# installer's own self-update. Nothing unverified is run. HALLTONE_SERVER / HALLTONE_FINGERPRINT
+# are for tests, as in the installer.
+# Kept on one line with no backslash, percent sign or inner single quote (desktop-file escaping);
+# Linux/apt-repo/test/installer-test.sh runs this Exec line.
+Exec=bash -c 'S="${HALLTONE_SERVER:-http://apt.localdomain}"; F="${HALLTONE_FINGERPRINT:-CC986414E18AB806302DEA35935DEAC147677FAF}"; K=/usr/share/keyrings/halltone-archive-keyring.gpg; d=$(mktemp -d); trap "rm -rf $d" EXIT; get() { curl -fsSL -m 20 "$S/$1" -o "$d/$2"; }; sig_ok() { [ -s "$1" ] && gpgv --keyring "$1" "$d/i.sh.asc" "$d/i.sh" >/dev/null 2>&1; }; run() { echo "Downloading the Halltone installer from $S"; get install-halltone.sh i.sh && get install-halltone.sh.asc i.sh.asc || { echo "Could not download the installer from $S." >&2; return 1; }; if ! sig_ok "$K"; then get halltone/halltone-archive-keyring.gpg key.gpg || { echo "Could not download the repo key from $S." >&2; return 1; }; got=$(gpg --show-keys --with-colons "$d/key.gpg" 2>/dev/null | grep "^fpr" | head -n 1 | cut -d: -f10); [ "$got" = "$F" ] || { echo "The key served by $S has fingerprint [$got], expected $F. Not running the installer." >&2; return 1; }; sig_ok "$d/key.gpg" || { echo "Signature check of the installer failed. Not running it." >&2; return 1; }; fi; bash "$d/i.sh"; }; run; rc=$?; echo; printf "Press Enter to close. "; read -r _; exit $rc'
 Terminal=true
 Icon=system-software-install
 Categories=AudioVideo;Audio;
