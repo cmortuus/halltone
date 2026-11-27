@@ -69,7 +69,7 @@ else
   base="https://download.swift.org/swift-$SWIFT_VERSION-release/debian12/swift-$SWIFT_VERSION-RELEASE/swift-$SWIFT_VERSION-RELEASE-debian12.tar.gz"
   curl -fsSL -o "$sw/swift.tar.gz" "$base"
   curl -fsSL -o "$sw/swift.tar.gz.sig" "$base.sig"
-  curl -fsSL -o "$sw/keys.asc" https://www.swift.org/keys/all-keys.asc
+  curl -fsSL --compressed -o "$sw/keys.asc" https://www.swift.org/keys/all-keys.asc   # served gzip-encoded
   gpg --batch --no-default-keyring --keyring "$sw/swift.kbx" --import "$sw/keys.asc" 2>/dev/null
   gpg --batch --no-default-keyring --keyring "$sw/swift.kbx" --export "$SWIFT_KEY_FPR" > "$sw/key.gpg"
   [ -s "$sw/key.gpg" ] || { echo "Swift signing key $SWIFT_KEY_FPR not in all-keys.asc" >&2; exit 1; }
