@@ -60,7 +60,10 @@ gpgv --keyring /tmp/keyring.gpg /tmp/pub.sh.asc /tmp/pub.sh 2>/dev/null && ok "i
 echo '# tampered' >> /tmp/pub.sh
 if gpgv --keyring /tmp/keyring.gpg /tmp/pub.sh.asc /tmp/pub.sh 2>/dev/null; then fail "tampered installer verified"; fi
 ok "tampered installer fails verification"
-grep -q '^Exec=sh -c .*install-halltone.sh' /tmp/pub.desktop && ok "launcher published"
+cmp -s "$HERE/../server/install-halltone.desktop" /tmp/pub.desktop || fail "published launcher differs from git"
+ok "launcher published"
+if grep -Eq '\| *(ba)?sh' /tmp/pub.desktop; then fail "launcher pipes a download into a shell"; fi
+ok "launcher does not pipe into a shell"
 [ "$(stat -c %a /srv/apt/install-halltone.sh)" = 755 ] && ok "published installer is executable"
 
 echo "### log receiver"

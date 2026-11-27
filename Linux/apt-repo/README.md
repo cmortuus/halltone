@@ -112,7 +112,7 @@ tar -C /var/lib/repo -xzf halltone-apt-gnupg-backup.tar.gz && chown -R repo:repo
 ```
 
 If the key must change (compromise, expiry; it is valid 10 years from creation): generate a new one,
-change `FINGERPRINT` in `Linux/install-halltone.sh`, rerun `setup.sh` (it republishes), and have each
+change `FINGERPRINT` in `Linux/install-halltone.sh` and the pin in `server/install-halltone.desktop`, rerun `setup.sh` (it republishes), and have each
 client run the installer *once with the new fingerprint*. The old installer will refuse the new key
 and self-update is signature-checked against the pinned key too, so clients need a fresh copy of
 the installer by hand (e.g. the `.desktop` launcher, which fetches the latest every time, then `HALLTONE_FINGERPRINT=<new>`
@@ -133,8 +133,12 @@ Desktop users run `install-halltone.sh` (never with sudo). It:
 Fresh machines: download `http://apt.localdomain/install-halltone.desktop` (double-click launcher), or
 `curl -fsSL http://apt.localdomain/install-halltone.sh | bash`.
 
+The launcher downloads the installer and its `.asc` and runs it only if the signature verifies: against
+`/usr/share/keyrings/halltone-archive-keyring.gpg` when installed, otherwise against the served key once its
+fingerprint matches the one pinned in the launcher (same as the installer's). Keep the two pins in step when the key changes.
+
 The signature means a LAN attacker who can answer for `apt.localdomain` cannot feed clients code through
-self-update without the repo key. (A first-time `curl | bash` bootstrap is plain HTTP and trusts the LAN.)
+self-update or the launcher without the repo key. (The `curl | bash` one-liner is plain HTTP and trusts the LAN; prefer the launcher.)
 Note the token is visible to anyone on the LAN who fetches the installer: it only gates log uploads
 (5 MB each, 200 MB per host).
 
