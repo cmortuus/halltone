@@ -29,6 +29,10 @@ struct ContentView: View {
                     ForEach(model.allMacs) { mac in
                         SourceRow(mac: mac)
                     }
+                    .onDelete { offsets in
+                        let macs = model.allMacs
+                        offsets.map { macs[$0] }.forEach { model.delete($0) }
+                    }
                 } header: {
                     Text("Sources")
                 } footer: {
@@ -69,7 +73,8 @@ struct ContentView: View {
             }
             .navigationTitle("Halltone")
             .toolbar {
-                Button { showAdd = true } label: { Image(systemName: "plus") }
+                ToolbarItem(placement: .topBarLeading) { EditButton() }
+                ToolbarItem(placement: .topBarTrailing) { Button { showAdd = true } label: { Image(systemName: "plus") } }
             }
             .safeAreaInset(edge: .bottom) {
                 VStack(spacing: 8) {
@@ -203,9 +208,13 @@ private struct SourceRow: View {
                 set: { on in if on { model.connect(mac) } else { model.turnOff(mac.id) } }))
                 .labelsHidden()
         }
-        .swipeActions {
-            if mac.kind == .manual { Button("Remove", role: .destructive) { model.removeManual(mac) } }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button("Delete", role: .destructive) { model.delete(mac) }
             Button("Forget code") { model.forgetPairing(mac) }.tint(.orange)
+        }
+        .contextMenu {
+            Button("Forget pairing code") { model.forgetPairing(mac) }
+            Button("Delete", role: .destructive) { model.delete(mac) }
         }
     }
 }

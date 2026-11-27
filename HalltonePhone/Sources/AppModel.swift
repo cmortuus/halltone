@@ -231,7 +231,8 @@ final class AppModel: ObservableObject {
     private var observers: [NSObjectProtocol] = []
 
     init() {
-        manager = SourceManager(bus: playback.bus, store: DefaultsSettingsStore(defaults))
+        manager = SourceManager(bus: playback.bus, store: DefaultsSettingsStore(defaults),
+                                pairingStore: KeychainPairingStore())
         autoConnect = defaults.object(forKey: Key.autoConnect) as? Bool ?? true
         knownAddresses = defaults.dictionary(forKey: Key.knownAddresses) as? [String: String] ?? [:]
         knownTailscale = defaults.dictionary(forKey: Key.knownTailscale) as? [String: String] ?? [:]
@@ -512,6 +513,34 @@ final class AppModel: ObservableObject {
         manual.removeAll { $0.id == entry.id }
         persistManual()
         if selected == entry { selected = nil }
+    }
+
+    /// Swipe to delete: disconnect, forget the settings, the manual entry, the remembered address
+    /// and the pairing code. A Bonjour Mac still advertising comes back in "discovered", off,
+    /// and asks for its code again.
+    func delete(_ mac: MacEntry) {
+        if let s = manager.source(id: mac.id) {
+            sdiag(s, "deleted")
+            runtimes[mac.id]?.fallbackTask?.cancel()
+            stopProximity(for: mac.id)
+        }
+        if pairingPrompt?.id == mac.id { cancelPairing() }
+        autoConnectPending.remove(mac.id)
+        let wasActive = manager.source(id: mac.id) != nil
+        manager.remove(id: mac.id, pairingKey: mac.pairingKey)
+        runtimes[mac.id] = nil
+        manual.removeAll { $0.id == mac.id }
+        persistManual()
+        knownAddresses[mac.id] = nil
+        knownTailscale[mac.id] = nil
+        defaults.set(knownAddresses, forKey: Key.knownAddresses)
+        defaults.set(knownTailscale, forKey: Key.knownTailscale)
+        if selected?.id == mac.id { selected = nil }
+        if selected == nil { selected = discovered.first ?? manual.first }
+        refreshSources()
+        if wasActive {
+            if !manager.isActive { disconnectedLast() } else { updateNowPlaying(); updateLogTarget() }
+        }
     }
 
     func forgetPairing(_ mac: MacEntry) { Keychain.delete(for: mac.pairingKey) }
