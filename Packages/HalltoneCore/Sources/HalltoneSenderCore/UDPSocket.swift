@@ -93,7 +93,11 @@ final class UDPSocket {
         let n = withUnsafeMutableBytes(of: &local.bytes) { lb in
             Int(es_udp_recv(fd, buf, capacity, &from, lb.baseAddress!.assumingMemoryBound(to: UInt8.self), &hasLocal))
         }
-        if n < 0 { return (errno == EAGAIN || errno == EWOULDBLOCK) ? 0 : -1 }
+        // EINTR is "try again", like the timeout: with SO_RCVTIMEO set, recvmsg is never restarted
+        // after a signal handler runs (signal(7)), and helper exits (SIGCHLD) and our own signal
+        // handling make that happen. Returning -1 here ended the receive loop for good: the sender
+        // kept running but stopped hearing phones, which then timed out and could not re-join.
+        if n < 0 { return (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) ? 0 : -1 }
         if hasLocal != 0 {
             let key = PeerKey(from)
             localLock.lock()
