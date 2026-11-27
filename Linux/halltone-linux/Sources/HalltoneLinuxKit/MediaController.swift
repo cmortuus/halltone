@@ -79,6 +79,10 @@ public final class MediaController: ExplicitPlaybackEnvironment {
     private var startedAt: [String: TimeInterval] = [:]
     /// The player we last chose or paused, for Play when nothing is playing.
     private var lastActive: String?
+    /// When STATUS (or anything else) last asked what the players are doing. The background poll
+    /// only refreshes while that is recent, so an idle sender never touches D-Bus.
+    private var lastDemandAt: TimeInterval?
+    private let demandWindow: TimeInterval = 15
     private var pollTimer: DispatchSourceTimer?
     private let pollQueue = DispatchQueue(label: "com.halltone.mpris")
 
@@ -178,7 +182,8 @@ public final class MediaController: ExplicitPlaybackEnvironment {
     /// An MPRIS player exists that we may control. Uses the last snapshot (refreshing once if there
     /// is none), so it is cheap enough for STATUS.
     public func controlsAvailable() -> Bool {
-        refreshIfOlder(than: .infinity)
+        noteDemand()
+        refreshIfOlder(than: demandWindow)
         lock.lock(); defer { lock.unlock() }
         return snapshot.contains(where: isEligible)
     }
@@ -186,22 +191,32 @@ public final class MediaController: ExplicitPlaybackEnvironment {
     /// Whether an eligible player is playing, from the last snapshot; nil when nothing can be said
     /// (no eligible player, or the bus can't be asked).
     public func peekPlaying() -> Bool? {
-        refreshIfOlder(than: .infinity)
+        noteDemand()
+        refreshIfOlder(than: demandWindow)
         lock.lock(); defer { lock.unlock() }
         let eligible = snapshot.filter(isEligible)
         guard snapshotOK, !eligible.isEmpty else { return nil }
         return eligible.contains { $0.status == .playing }
     }
 
-    /// Refreshes the snapshot every `interval` seconds in the background, so STATUS never waits on D-Bus.
+    private func noteDemand() { lock.lock(); lastDemandAt = clock(); lock.unlock() }
+
+    /// Keeps the snapshot fresh in the background (every `interval` seconds) so STATUS never waits on
+    /// D-Bus, but only while someone is asking: each refresh spawns `busctl` several times, and an
+    /// idle sender (no phone connected) must not do that once a second for nothing.
     public func startPolling(interval: TimeInterval = 1) {
         lock.lock()
         guard pollTimer == nil else { lock.unlock(); return }
         let timer = DispatchSource.makeTimerSource(queue: pollQueue)
         pollTimer = timer
         lock.unlock()
-        timer.schedule(deadline: .now(), repeating: interval)
-        timer.setEventHandler { [weak self] in self?.refresh() }
+        timer.schedule(deadline: .now() + interval, repeating: interval)
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.lock.lock(); let asked = self.lastDemandAt; self.lock.unlock()
+            guard let asked, self.clock() - asked <= self.demandWindow else { return }
+            self.refresh()
+        }
         timer.resume()
     }
 
@@ -379,52 +394,5 @@ public final class BusctlBackend: MPRISBackend {
         }
         guard r.status == 0 else { throw BusError(description: "busctl \(args.prefix(3).joined(separator: " ")) failed (\(r.status)): \(r.stderr)") }
         return r.stdout
-    }
-}
-
-/// Runs a command with a hard deadline. stdout and stderr are drained concurrently (a full pipe
-/// can't wedge the child), and a command that doesn't exit in time is terminated, then killed:
-/// the caller gets nil ("no answer") and never hangs. A wedged D-Bus must not stall STATUS or a
-/// REMOTE_CONTROL ack.
-public enum CommandRunner {
-    public struct Result { public var status: Int32; public var stdout: String; public var stderr: String }
-
-    public static func run(_ executable: String, _ args: [String], timeout: TimeInterval) -> Result? {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: executable)
-        p.arguments = args
-        let out = Pipe(), err = Pipe()
-        p.standardOutput = out
-        p.standardError = err
-        p.standardInput = FileHandle.nullDevice
-        let exited = DispatchSemaphore(value: 0)
-        p.terminationHandler = { _ in exited.signal() }
-        do { try p.run() } catch { return nil }
-
-        let lock = NSLock()
-        var outData = Data(), errData = Data()
-        let drained = DispatchGroup()
-        for (pipe, isOut) in [(out, true), (err, false)] {
-            drained.enter()
-            Thread.detachNewThread {
-                let d = pipe.fileHandleForReading.readDataToEndOfFile()
-                lock.lock(); if isOut { outData = d } else { errData = d }; lock.unlock()
-                drained.leave()
-            }
-        }
-        var finished = exited.wait(timeout: .now() + timeout) == .success
-        if !finished {
-            p.terminate()
-            finished = false
-            if exited.wait(timeout: .now() + 0.5) != .success {
-                kill(p.processIdentifier, SIGKILL)
-                _ = exited.wait(timeout: .now() + 0.5)
-            }
-        }
-        // The readers end at EOF; don't wait long in case a grandchild holds the pipe open.
-        _ = drained.wait(timeout: .now() + (finished ? 1.0 : 0.2))
-        guard finished else { return nil }
-        lock.lock(); defer { lock.unlock() }
-        return Result(status: p.terminationStatus, stdout: String(decoding: outData, as: UTF8.self), stderr: String(decoding: errData, as: UTF8.self))
     }
 }
