@@ -272,7 +272,9 @@ private struct SourceSection: View {
         }
     }
 
-    private var defaultMode: LatencyMode { LatencyMode.resolve(choice: nil, frameSamples: stats.frameSamples) }
+    private var defaultMode: LatencyMode {
+        LatencyMode.resolve(choice: nil, frameSamples: stats.frameSamples, slowOutput: model.outputLatencyMs > SourceManager.slowOutputMs)
+    }
 
     private var latencyFooter: String {
         let mode = source.effectiveMode
@@ -286,7 +288,11 @@ private struct SourceSection: View {
         case .lowest: return "Closest to real time, for watching video on the Mac. Uses only as much delay as your Wi‑Fi needs to play smoothly."
         case .balanced: return "Adapts to your Wi‑Fi: no more delay than it needs to avoid dropouts."
         case .stable: return "About a third of a second behind, but rides out moving between Wi‑Fi access points and weak spots. Best for music and podcasts while you move around."
-        case .game: return (isDefault ? "Used because this sender sends 2.5 ms frames (its Game mode). " : "")
+        case .game:
+            if source.gameIsPointless {
+                return "Game mode doesn't help with Bluetooth headphones: ~\(model.outputLatencyMs) ms of their own delay. Buffering like Lowest here."
+            }
+            return (isDefault ? "Used because this sender sends 2.5 ms frames (its Game mode). " : "")
             + "For playing games with this iPhone on the desk next to your computer: about 40–55 ms before your headphones. Keep this app open (the screen stays on), and use wired or USB‑C headphones: Bluetooth headphones add about 150–250 ms of their own. Rare short audio fades on weak Wi‑Fi instead of extra delay."
         }
     }

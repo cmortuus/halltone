@@ -91,7 +91,7 @@ public final class PCM16Decoder: AudioDecoder {
         return true
     }
 
-    /// Fades the previous frame out to silence over this frame. Repeated conceals converge to silence.
+    /// Fades the previous frame out to silence over this frame; further conceals are silent.
     public func conceal(into pcm: UnsafeMutablePointer<Float>) {
         guard haveLast else { pcm.update(repeating: 0, count: count); return }
         let frames = frameSamples
@@ -102,7 +102,9 @@ public final class PCM16Decoder: AudioDecoder {
                 pcm[i] = last[i] * g
             }
         }
-        for i in 0..<count { last[i] = pcm[i] }
+        // Only the first concealed frame fades; the rest are silent (a ramp per frame would be a
+        // tone at the frame rate when many tiny frames are concealed in a row).
+        for i in 0..<count { last[i] = 0 }
     }
 
     public func decodeFEC(nextPayload: UnsafeRawBufferPointer, into pcm: UnsafeMutablePointer<Float>) -> Bool { false }

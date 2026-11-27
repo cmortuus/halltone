@@ -83,6 +83,8 @@ public final class Receiver {
         /// (catch-up/drift), and stretched (drift).
         public var concealedFrames: UInt64 = 0
         public var lateFrames: UInt64 = 0
+        /// Late packets whose slot was already concealed: they arrived, so not loss.
+        public var lateConcealedFrames: UInt64 = 0
         public var trimmedFrames: UInt64 = 0
         public var stretchedFrames: UInt64 = 0
         public init() {}
@@ -111,10 +113,16 @@ public final class Receiver {
         didSet { queue.async { [self] in applyEffectiveConfig() } }
     }
 
+    /// The output route adds ~160 ms of its own (Bluetooth): Game mode buffers like Lowest.
+    public var slowOutput = false {
+        didSet { if slowOutput != oldValue { queue.async { [self] in applyEffectiveConfig() } } }
+    }
+
     /// The mode actually in effect for a stream with these frames.
     private func effectiveMode(frameSamples: Int) -> LatencyMode {
-        latencyMode == .auto && gameFramesPlayAsGame
+        let mode = latencyMode == .auto && gameFramesPlayAsGame
             ? LatencyMode.resolve(choice: nil, frameSamples: frameSamples) : latencyMode
+        return mode == .game && slowOutput ? .lowest : mode
     }
 
     /// Ask the Mac to keep headphones on this phone (stop it taking them back while listening).
@@ -247,6 +255,7 @@ public final class Receiver {
     private var packetsThisSecond = 0
     private var bytesThisSecond = 0
     private var lastLost: UInt64 = 0
+    private var lastLateConcealed: UInt64 = 0
     private var lastReceived: UInt64 = 0
     private var pathInterfaces: Set<String> = []
     private var sessionKnown: UInt32?
@@ -556,9 +565,13 @@ public final class Receiver {
 
     private func everySecond() {
         let js = pump?.stats ?? JitterBuffer.Stats()
-        let (lost, recv) = Self.counterDeltas(lost: js.lost, received: js.received,
+        var (lost, recv) = Self.counterDeltas(lost: js.lost, received: js.received,
                                               lastLost: lastLost, lastReceived: lastReceived)
-        lastLost = js.lost; lastReceived = js.received
+        let (lateC, _) = Self.counterDeltas(lost: js.lateConcealed, received: 0,
+                                            lastLost: lastLateConcealed, lastReceived: 0)
+        lastLost = js.lost; lastReceived = js.received; lastLateConcealed = js.lateConcealed
+        // A concealed frame whose packet then turned up late was not lost; don't call it loss.
+        lost = lost > lateC ? lost - lateC : 0
         let total = lost + recv
         let permille = total > 0 ? Int(lost * 1000 / total) : 0
         stats.lossPercent = Double(permille) / 10
@@ -576,6 +589,7 @@ public final class Receiver {
         if let p = pump { let w = Int(Int64(bitPattern: p.workgroupStatus.load())); stats.workgroupStatus = w == -99 ? nil : w }
         stats.concealedFrames = js.lost
         stats.lateFrames = js.late
+        stats.lateConcealedFrames = js.lateConcealed
         stats.trimmedFrames = js.driftDrops
         stats.stretchedFrames = js.driftDups
         stats.jitterResets = js.resets

@@ -114,6 +114,8 @@ struct SourceStatus: Identifiable {
     var config: SourceConfig
     /// What it plays in: the user's pick, else Auto, or Game for a sender using 2.5 ms frames.
     var effectiveMode: LatencyMode
+    /// Game was picked but the output is Bluetooth, so it buffers like Lowest.
+    var gameIsPointless = false
     /// The lock screen and headphone buttons talk to this one.
     var isMediaSource: Bool
     var state: Receiver.State { stats.state }
@@ -281,7 +283,7 @@ final class AppModel: ObservableObject {
         syncNowPlayingRate()
         guard let rt = runtimes[source.id], s.state.isActive, shouldLogStats(s, rt) else { return }
         let rssi = rt.proximity.rssi.map { String(Int($0)) } ?? "-"
-        var line = "stats atMac=\(s.atMac) near=\(s.phoneNearMac.map(String.init) ?? "-") rssi=\(rssi) active=\(s.macUserActive.map(String.init) ?? "-") input=\(s.macInputRecent.map(String.init) ?? "-") buf=\(s.bufferMs)/\(s.targetMs) loss=\(s.lossPercent)% pps=\(s.packetsPerSecond) under=\(s.underruns) cb=\(s.callbackFrames) gap=\(s.arrivalGapMs) maxgap10s=\(s.maxArrivalGapMs10s) timergap10s=\(s.maxTimerGapMs10s) bg=\(UIApplication.shared.applicationState == .background) primed=\(s.jitterPrimed) resets=\(s.jitterResets) queued=\(s.queuedMs) handoff=\(s.handoffMs) muted=\(playback.muted) concealed=\(s.concealedFrames) late=\(s.lateFrames) trimmed=\(s.trimmedFrames) stretched=\(s.stretchedFrames) wg=\(s.workgroupStatus.map(String.init) ?? "-") resendAsked=\(s.resendRequested) recovered=\(s.resendRecovered) engine=\(playback.engine.isRunning)"
+        var line = "stats atMac=\(s.atMac) near=\(s.phoneNearMac.map(String.init) ?? "-") rssi=\(rssi) active=\(s.macUserActive.map(String.init) ?? "-") input=\(s.macInputRecent.map(String.init) ?? "-") buf=\(s.bufferMs)/\(s.targetMs) loss=\(s.lossPercent)% pps=\(s.packetsPerSecond) under=\(s.underruns) cb=\(s.callbackFrames) gap=\(s.arrivalGapMs) maxgap10s=\(s.maxArrivalGapMs10s) timergap10s=\(s.maxTimerGapMs10s) bg=\(UIApplication.shared.applicationState == .background) primed=\(s.jitterPrimed) resets=\(s.jitterResets) queued=\(s.queuedMs) handoff=\(s.handoffMs) muted=\(playback.muted) concealed=\(s.concealedFrames) late=\(s.lateFrames) lateConcealed=\(s.lateConcealedFrames) trimmed=\(s.trimmedFrames) stretched=\(s.stretchedFrames) wg=\(s.workgroupStatus.map(String.init) ?? "-") resendAsked=\(s.resendRequested) recovered=\(s.resendRecovered) engine=\(playback.engine.isRunning)"
         // Only when set: with one source at its defaults the line is what it always was.
         if source.config.volume != 1 { line += " vol=\(String(format: "%.2f", source.config.volume))" }
         if source.config.muted { line += " srcmuted=true" }
@@ -579,7 +581,7 @@ final class AppModel: ObservableObject {
         let media = manager.mediaSource?.id
         sources = manager.sources.map {
             SourceStatus(id: $0.id, name: $0.name, stats: $0.stats, config: $0.config,
-                         effectiveMode: $0.effectiveMode, isMediaSource: $0.id == media)
+                         effectiveMode: $0.effectiveMode, gameIsPointless: $0.gameIsPointless, isMediaSource: $0.id == media)
         }
         updateIdleTimer()
         let wantsGame = wantsGameBuffer
@@ -739,8 +741,8 @@ final class AppModel: ObservableObject {
 
     /// Any source plays in Game mode (by its frames, or because it was set to Game).
     private var wantsGameBuffer: Bool {
-        manager.sources.contains { $0.effectiveMode == .game }
-            || manager.settings.enabled.contains { manager.settings.config(for: $0).latency == .game }
+        !manager.slowOutput && (manager.sources.contains { $0.effectiveMode == .game }
+            || manager.settings.enabled.contains { manager.settings.config(for: $0).latency == .game })
     }
 
     private func logGrantedIOBuffer(_ why: String) {
@@ -763,12 +765,19 @@ final class AppModel: ObservableObject {
         let s = AVAudioSession.sharedInstance()
         let ms = Int(((s.outputLatency + s.ioBufferDuration) * 1000).rounded())
         if ms != outputLatencyMs { outputLatencyMs = ms }
+        // Bluetooth (A2DP ~160 ms): Game mode's tiny buffer buys nothing there.
+        let slow = ms > SourceManager.slowOutputMs
+        if slow != manager.slowOutput {
+            manager.slowOutput = slow
+            diag("output latency \(ms) ms: \(slow ? "slow route, Game mode buffers like Lowest" : "fast route")")
+            refreshSources()
+        }
     }
 
     /// Game mode keeps the screen on while the app is in front and playing: locking the phone
     /// makes iOS deepen its output buffer (100+ ms), which is the delay Game mode removes.
     private func updateIdleTimer() {
-        let keepAwake = manager.sources.contains { $0.isActive && $0.effectiveMode == .game } && !paused
+        let keepAwake = manager.sources.contains { $0.isActive && $0.effectiveMode == .game && !$0.slowOutput } && !paused
             && UIApplication.shared.applicationState == .active
         if UIApplication.shared.isIdleTimerDisabled != keepAwake {
             UIApplication.shared.isIdleTimerDisabled = keepAwake
