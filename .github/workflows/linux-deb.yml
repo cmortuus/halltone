@@ -1,0 +1,122 @@
+name: Linux .deb
+
+# Builds halltone-linux_<version>_<arch>.deb (static Swift stdlib), install-tests it on a clean
+# Swift-free Ubuntu 24.04, and on a `linux-v*` tag publishes a GitHub Release with the .debs and
+# SHA256SUMS. Asset names are a contract with the apt repo server that imports releases.
+
+on:
+  pull_request:
+    paths:
+      - "Linux/**"
+      - "Packages/**"
+      - ".github/workflows/linux-deb.yml"
+  push:
+    tags: ["linux-v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: linux-deb-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build .deb (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: swift:6.1-noble
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install build packages
+        run: apt-get update && apt-get install -y --no-install-recommends pkg-config libpulse-dev dpkg-dev binutils
+      - name: Compute version
+        id: ver
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            v="${GITHUB_REF_NAME#linux-v}"
+          else
+            v="0.0.0~git$(git rev-list --count HEAD).$(git rev-parse --short=7 HEAD)"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Version: $v"
+      - name: Build
+        run: Linux/packaging/build-deb.sh "${{ steps.ver.outputs.version }}" ${{ matrix.arch }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.arch }}
+          path: Linux/packaging/out/halltone-linux_*_${{ matrix.arch }}.deb
+          if-no-files-found: error
+
+  install-test:
+    name: Install test on clean Ubuntu 24.04 (${{ matrix.arch }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: ubuntu:24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: deb-${{ matrix.arch }}
+      - name: Install (dependencies must resolve; no Swift present)
+        run: |
+          ! command -v swift
+          apt-get update
+          apt-get install -y ./halltone-linux_*.deb
+          dpkg -s halltone-linux | grep -E '^(Version|Depends|Recommends)'
+      - name: Runs
+        run: |
+          halltone-linux --version
+          test -f /usr/lib/systemd/user/halltone.service
+          grep '^ExecStart=/usr/bin/halltone-linux$' /usr/lib/systemd/user/halltone.service
+          test -s /usr/share/doc/halltone-linux/copyright
+          ldd /usr/bin/halltone-linux
+          ! ldd /usr/bin/halltone-linux | grep -i "not found"
+      - name: Starts with the tone source
+        run: |
+          export HOME=/tmp/home XDG_CONFIG_HOME=/tmp/home/.config; mkdir -p "$HOME"
+          timeout 6 halltone-linux --source tone --no-advertise > /tmp/run.log 2>&1 && rc=0 || rc=$?
+          cat /tmp/run.log
+          # 124 = still running when timeout stopped it (expected)
+          [ "$rc" = 124 ]
+
+  release:
+    name: GitHub Release
+    if: startsWith(github.ref, 'refs/tags/linux-v')
+    needs: [build, install-test]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: deb-*
+          path: dist
+          merge-multiple: true
+      - name: SHA256SUMS
+        working-directory: dist
+        run: |
+          sha256sum halltone-linux_*.deb > SHA256SUMS
+          cat SHA256SUMS
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/halltone-linux_*.deb dist/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --title "halltone-linux ${GITHUB_REF_NAME#linux-v}" \
+            --notes "halltone-linux .deb packages (amd64, arm64). Installed via the self-hosted apt repo; see the README."
