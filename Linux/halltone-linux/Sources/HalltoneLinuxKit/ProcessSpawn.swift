@@ -24,8 +24,14 @@ enum Spawn {
 
     static func makePipe() -> (read: Int32, write: Int32)? {
         var fds: [Int32] = [-1, -1]
+        #if os(Linux)
+        // Atomic: other threads spawn children too, and a child forked between pipe() and fcntl()
+        // would inherit the write end and keep the reader from ever seeing EOF.
+        guard pipe2(&fds, O_CLOEXEC) == 0 else { return nil }
+        #else
         guard pipe(&fds) == 0 else { return nil }
         for fd in fds { _ = fcntl(fd, F_SETFD, FD_CLOEXEC) }
+        #endif
         return (fds[0], fds[1])
     }
 

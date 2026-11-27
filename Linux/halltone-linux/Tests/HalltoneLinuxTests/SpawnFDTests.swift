@@ -1,5 +1,8 @@
 import Testing
 import Foundation
+#if canImport(Glibc)
+import Glibc
+#endif
 @testable import HalltoneLinuxKit
 
 /// The helper itself: streaming spawns (parec, avahi-publish-service) must not leak either.
@@ -10,13 +13,18 @@ import Foundation
         let before = try #require(settledFDs())
         for _ in 0..<200 {
             let s = try Spawn.start("/bin/sh", ["-c", "echo out; echo err 1>&2"], captureStdout: true, captureStderr: true)
-            let out = Spawn.drain(try #require(s.stdout)), err = Spawn.drain(try #require(s.stderr))
+            let deadline = Date().addingTimeInterval(5)
+            let out = Spawn.drain(try #require(s.stdout), shouldStop: { Date() > deadline })
+            let err = Spawn.drain(try #require(s.stderr), shouldStop: { Date() > deadline })
             #expect(String(decoding: out, as: UTF8.self) == "out\n" && String(decoding: err, as: UTF8.self) == "err\n")
         }
         for _ in 0..<50 {   // a long-lived child that is stopped, as AppStreamCapture does
             let s = try Spawn.start("/bin/sleep", ["30"], captureStdout: true, captureStderr: false)
             s.process.terminate()
-            _ = Spawn.drain(try #require(s.stdout))
+            let deadline = Date().addingTimeInterval(5)
+            _ = Spawn.drain(try #require(s.stdout), shouldStop: { Date() > deadline })
+            #expect(Date() < deadline, "no EOF after the child was terminated")
+            if s.process.isRunning { kill(s.process.processIdentifier, SIGKILL) }
         }
         for _ in 0..<50 { #expect((try? Spawn.start("/nonexistent/program", [], captureStdout: true, captureStderr: true)) == nil) }
         let after = try #require(settledFDs())
