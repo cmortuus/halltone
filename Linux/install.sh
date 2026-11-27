@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds halltone-linux, installs it to ~/.local/bin and sets it up as a systemd *user* service
-# (halltone.service) so it runs at login. Ubuntu 22.04+ / 24.04.
+# (halltone.service) so it runs at login. Also installs halltone-tray, the top-bar icon and menu
+# (autostarts at login). Ubuntu 22.04+ / 24.04.
 #
 #   Linux/install.sh              build, install, enable and start the service
 #   Linux/install.sh --no-service build and install the binary only
@@ -11,6 +12,8 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 bin_dir="$HOME/.local/bin"
 unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+autostart_dir="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
+data_dir="${XDG_DATA_HOME:-$HOME/.local/share}"
 config="${XDG_CONFIG_HOME:-$HOME/.config}/halltone/config.json"
 
 assume_yes=0; with_service=1; uninstall=0
@@ -19,7 +22,7 @@ for arg in "$@"; do
     --yes|-y) assume_yes=1 ;;
     --no-service) with_service=0 ;;
     --uninstall) uninstall=1 ;;
-    -h|--help) sed -n '2,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -32,7 +35,9 @@ if [ "$uninstall" = 1 ]; then
     rm -f "$unit_dir/halltone.service"
     systemctl --user daemon-reload || true
   fi
-  rm -f "$bin_dir/halltone-linux"
+  rm -f "$bin_dir/halltone-linux" "$bin_dir/halltone-tray" "$autostart_dir/halltone-tray.desktop" "$data_dir/applications/halltone-tray.desktop"
+  rm -f "$data_dir"/icons/hicolor/scalable/status/halltone-{idle,streaming,error}-symbolic.svg
+  pkill -u "$(id -u)" -f "$bin_dir/halltone-tray" 2>/dev/null || true
   echo "Removed halltone-linux and its service. Your config ($config) is kept."
   exit 0
 fi
@@ -43,12 +48,12 @@ fi
 missing_required=(); missing_optional=()
 pkg_installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q "install ok installed"; }
 for p in libpulse-dev pkg-config; do pkg_installed "$p" || missing_required+=("$p"); done
-for p in avahi-utils pulseaudio-utils; do pkg_installed "$p" || missing_optional+=("$p"); done
+for p in avahi-utils pulseaudio-utils python3-gi gir1.2-ayatanaappindicator3-0.1; do pkg_installed "$p" || missing_optional+=("$p"); done
 
 if [ ${#missing_required[@]} -gt 0 ] || [ ${#missing_optional[@]} -gt 0 ]; then
   echo "Halltone needs these Ubuntu packages and they are not installed:"
   [ ${#missing_required[@]} -gt 0 ] && echo "  required (to build):       ${missing_required[*]}"
-  [ ${#missing_optional[@]} -gt 0 ] && echo "  recommended (discovery):   ${missing_optional[*]}"
+  [ ${#missing_optional[@]} -gt 0 ] && echo "  recommended (discovery, top-bar icon): ${missing_optional[*]}"
   answer=n
   if [ "$assume_yes" = 1 ]; then answer=y; else
     read -r -p "Install them now with 'sudo apt-get install'? [y/N] " answer || true
@@ -95,6 +100,16 @@ if [ "$with_service" = 1 ]; then
     echo "No systemd user session here, so no service was installed. Run halltone-linux by hand."
   fi
 fi
+
+# 4b. The top-bar icon (halltone-tray): script, symbolic icons, launcher, autostart at login.
+install -m 755 "$here/tray/halltone-tray" "$bin_dir/halltone-tray"
+mkdir -p "$data_dir/icons/hicolor/scalable/status" "$data_dir/applications" "$autostart_dir"
+install -m 644 "$here"/tray/icons/halltone-*-symbolic.svg "$data_dir/icons/hicolor/scalable/status/"
+sed "s|^Exec=.*|Exec=$bin_dir/halltone-tray|" "$here/tray/halltone-tray.desktop" > "$data_dir/applications/halltone-tray.desktop"
+sed "s|^Exec=.*|Exec=$bin_dir/halltone-tray|" "$here/tray/halltone-tray-autostart.desktop" > "$autostart_dir/halltone-tray.desktop"
+command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -q -t -f "$data_dir/icons/hicolor" 2>/dev/null || true
+echo "Installed $bin_dir/halltone-tray (top-bar icon; starts at login; start it now with: halltone-tray &)"
+echo "On Ubuntu's GNOME the icon needs the AppIndicator extension (ubuntu-appindicators@ubuntu.com, enabled by default)."
 
 # 5. The pairing code the phone asks for.
 if [ -f "$config" ]; then

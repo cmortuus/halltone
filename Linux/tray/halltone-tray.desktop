@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Halltone
+Comment=Top-bar icon for the Halltone audio sender: status, pairing code, toggles
+Exec=halltone-tray
+Icon=halltone-idle-symbolic
+Terminal=false
+Categories=AudioVideo;Audio;
+StartupNotify=false

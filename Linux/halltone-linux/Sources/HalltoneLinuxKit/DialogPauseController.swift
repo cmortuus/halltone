@@ -99,6 +99,18 @@ public final class DialogPauseController {
         lock.lock(); speechAge = msSince; speechSampledAt = monotonicNow(); lock.unlock()
     }
 
+    /// One word for the tray: off, idle, pending, paused or resuming.
+    public var phaseWord: String {
+        lock.lock(); defer { lock.unlock() }
+        if !enabled { return "off" }
+        switch machine.phase {
+        case .idle: return "idle"
+        case .pending: return "pending"
+        case .paused: return "paused"
+        case .resuming: return "resuming"
+        }
+    }
+
     public func statusText() -> String {
         lock.lock(); defer { lock.unlock() }
         var phase: String

@@ -25,6 +25,16 @@ echo "Building halltone-linux (release, static Swift stdlib)..."
 bin="$repo/Linux/halltone-linux/.build/release/halltone-linux"
 
 mkdir -p "$pkg/DEBIAN" "$pkg/usr/bin" "$pkg/usr/lib/systemd/user" "$pkg/usr/share/doc/halltone-linux"
+
+# halltone-tray: the top-bar icon (Python 3 + GTK + AyatanaAppIndicator3), its icons, launcher
+# and autostart entry. Fail the build if the script doesn't even compile.
+python3 -m py_compile "$repo/Linux/tray/halltone-tray"
+rm -rf "$repo/Linux/tray/__pycache__"
+install -m 755 "$repo/Linux/tray/halltone-tray" "$pkg/usr/bin/halltone-tray"
+mkdir -p "$pkg/usr/share/icons/hicolor/scalable/status" "$pkg/usr/share/applications" "$pkg/etc/xdg/autostart"
+install -m 644 "$repo"/Linux/tray/icons/halltone-*-symbolic.svg "$pkg/usr/share/icons/hicolor/scalable/status/"
+install -m 644 "$repo/Linux/tray/halltone-tray.desktop" "$pkg/usr/share/applications/halltone-tray.desktop"
+install -m 644 "$repo/Linux/tray/halltone-tray-autostart.desktop" "$pkg/etc/xdg/autostart/halltone-tray.desktop"
 install -m 755 "$bin" "$pkg/usr/bin/halltone-linux"
 strip --strip-unneeded "$pkg/usr/bin/halltone-linux"
 
@@ -69,6 +79,8 @@ mkdir -p "$work/shl/debian"
 printf 'Source: halltone-linux\n\nPackage: halltone-linux\nArchitecture: any\n' > "$work/shl/debian/control"
 depends="$(cd "$work/shl" && dpkg-shlibdeps -O -e"$pkg/usr/bin/halltone-linux" 2>/dev/null | sed -n 's/^shlibs:Depends=//p')"
 [ -n "$depends" ] || { echo "dpkg-shlibdeps produced no Depends" >&2; exit 1; }
+# The tray is a Python script: its runtime needs are fixed, not found by shlibdeps.
+depends="$depends, python3, python3-gi, gir1.2-gtk-3.0, gir1.2-ayatanaappindicator3-0.1"
 echo "Depends: $depends"
 
 size_kb="$(du -sk --exclude=DEBIAN "$pkg" | cut -f1)"
@@ -81,13 +93,14 @@ Architecture: $arch
 Maintainer: cmortuus <cmortuus@users.noreply.github.com>
 Installed-Size: $size_kb
 Depends: $depends
-Recommends: avahi-utils, pulseaudio-utils
+Recommends: avahi-utils, pulseaudio-utils, gnome-shell-extension-appindicator
 Homepage: https://github.com/cmortuus/halltone
 Description: Stream this PC's audio to the Halltone iPhone app
  halltone-linux captures the default PulseAudio/PipeWire output and streams it
  over the local network to the Halltone app on an iPhone (low-latency PCM or
  Opus), advertises itself with Avahi, and can pause the PC's media player while
- dialog is detected. Run as a systemd user service.
+ dialog is detected. Run as a systemd user service. Includes halltone-tray, a
+ top-bar icon and menu (status, pairing code, listeners, toggles).
 CTL
 
 cat > "$pkg/DEBIAN/postinst" <<'SH'
@@ -95,14 +108,28 @@ cat > "$pkg/DEBIAN/postinst" <<'SH'
 set -e
 if [ "$1" = "configure" ]; then
   if [ -n "$2" ]; then
-    echo "halltone-linux upgraded. Running users: systemctl --user restart halltone"
+    echo "halltone-linux upgraded. Running users: systemctl --user restart halltone (and log out and in, or restart halltone-tray)"
   else
     cat <<MSG
 halltone-linux installed. The service is not enabled automatically. As your own user, run:
   systemctl --user daemon-reload && systemctl --user enable --now halltone
+The top-bar icon (halltone-tray) starts at your next login; start it now with: halltone-tray &
 Then find the pairing code with:
   journalctl --user -u halltone -n 20      (or "pairingCode" in ~/.config/halltone/config.json)
 MSG
+  fi
+fi
+if [ "$1" = "configure" ] && command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+fi
+exit 0
+SH
+cat > "$pkg/DEBIAN/postrm" <<'SH'
+#!/bin/sh
+set -e
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+  if command -v gtk-update-icon-cache >/dev/null 2>&1 && [ -d /usr/share/icons/hicolor ]; then
+    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
   fi
 fi
 exit 0
@@ -115,7 +142,7 @@ if [ "$1" = "remove" ]; then
 fi
 exit 0
 SH
-chmod 755 "$pkg/DEBIAN/postinst" "$pkg/DEBIAN/prerm"
+chmod 755 "$pkg/DEBIAN/postinst" "$pkg/DEBIAN/postrm" "$pkg/DEBIAN/prerm"
 
 mkdir -p "$out"
 deb="$out/halltone-linux_${version}_${arch}.deb"

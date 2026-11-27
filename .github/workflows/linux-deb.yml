@@ -36,7 +36,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Install build packages
-        run: apt-get update && apt-get install -y --no-install-recommends pkg-config libpulse-dev dpkg-dev binutils
+        run: apt-get update && apt-get install -y --no-install-recommends pkg-config libpulse-dev dpkg-dev binutils python3
       - name: Compute version
         id: ver
         run: |
@@ -85,6 +85,11 @@ jobs:
           test -f /usr/lib/systemd/user/halltone.service
           grep '^ExecStart=/usr/bin/halltone-linux$' /usr/lib/systemd/user/halltone.service
           test -s /usr/share/doc/halltone-linux/copyright
+          for f in /usr/bin/halltone-tray /usr/share/applications/halltone-tray.desktop /etc/xdg/autostart/halltone-tray.desktop \
+                   /usr/share/icons/hicolor/scalable/status/halltone-idle-symbolic.svg \
+                   /usr/share/icons/hicolor/scalable/status/halltone-streaming-symbolic.svg \
+                   /usr/share/icons/hicolor/scalable/status/halltone-error-symbolic.svg; do test -e "$f" || { echo "missing $f"; exit 1; }; done
+          grep '^Exec=halltone-tray$' /etc/xdg/autostart/halltone-tray.desktop
           ldd /usr/bin/halltone-linux
           ! ldd /usr/bin/halltone-linux | grep -i "not found"
       - name: Starts with the tone source
@@ -94,6 +99,20 @@ jobs:
           cat /tmp/run.log
           # 124 = still running when timeout stopped it (expected)
           [ "$rc" = 124 ]
+
+      - name: Tray bindings load, and the tray reads a running daemon
+        run: |
+          python3 -c "import gi; gi.require_version('Gtk','3.0'); gi.require_version('AyatanaAppIndicator3','0.1'); from gi.repository import Gtk, AyatanaAppIndicator3; print('bindings ok')"
+          export HOME=/tmp/home XDG_CONFIG_HOME=/tmp/home/.config XDG_RUNTIME_DIR=/tmp/run; mkdir -p "$HOME" "$XDG_RUNTIME_DIR"
+          halltone-tray --dump | tee /tmp/down.txt
+          grep -q 'Not running' /tmp/down.txt
+          halltone-linux --source tone --no-advertise --code 4242 > /tmp/d.log 2>&1 &
+          daemon=$!
+          for _ in $(seq 50); do [ -S "$XDG_RUNTIME_DIR/halltone-linux.sock" ] && break; sleep 0.1; done
+          halltone-tray --dump | tee /tmp/up.txt
+          grep -q 'Waiting for a phone' /tmp/up.txt
+          grep -q 'Pairing code: 4242' /tmp/up.txt
+          kill "$daemon"
 
   release:
     name: GitHub Release
