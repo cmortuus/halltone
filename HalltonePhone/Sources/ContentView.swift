@@ -29,10 +29,6 @@ struct ContentView: View {
                     ForEach(model.allMacs) { mac in
                         SourceRow(mac: mac)
                     }
-                    .onDelete { offsets in
-                        let macs = model.allMacs
-                        offsets.map { macs[$0] }.forEach { model.delete($0) }
-                    }
                 } header: {
                     Text("Sources")
                 } footer: {
@@ -73,8 +69,7 @@ struct ContentView: View {
             }
             .navigationTitle("Halltone")
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { EditButton() }
-                ToolbarItem(placement: .topBarTrailing) { Button { showAdd = true } label: { Image(systemName: "plus") } }
+                Button { showAdd = true } label: { Image(systemName: "plus") }
             }
             .safeAreaInset(edge: .bottom) {
                 VStack(spacing: 8) {
