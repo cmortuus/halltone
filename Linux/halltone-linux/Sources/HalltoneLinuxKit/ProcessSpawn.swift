@@ -62,11 +62,25 @@ enum Spawn {
             p.standardError = FileHandle.nullDevice
         }
         if let onExit { p.terminationHandler = onExit }
-        do { try p.run() } catch { closeAll(); throw error }
+        do { try withEmptySignalMask { try p.run() } } catch { closeAll(); throw error }
         // The child has its own copies; the parent must not keep the write ends or EOF never comes.
         if let outPipe { close(outPipe.write) }
         if let errPipe { close(errPipe.write) }
         return Started(process: p, stdout: outPipe?.read, stderr: errPipe?.read)
+    }
+
+    /// A child starts with the signal mask of the thread that launched it, and Foundation's `Process`
+    /// does not reset it. GCD worker threads block nearly every signal, so helpers started from them
+    /// had SIGTERM blocked: `terminate()` did nothing, an old avahi-publish-service kept advertising
+    /// after a republish, and `systemctl --user stop/restart halltone` hung 90 s on it until SIGKILL,
+    /// with the PC unreachable from the phone meanwhile. So the mask is cleared just for the launch
+    /// (under `launchLock`; the window is the posix_spawn call).
+    static func withEmptySignalMask<T>(_ body: () throws -> T) rethrows -> T {
+        var empty = sigset_t(), saved = sigset_t()
+        sigemptyset(&empty)
+        pthread_sigmask(SIG_SETMASK, &empty, &saved)
+        defer { pthread_sigmask(SIG_SETMASK, &saved, nil) }
+        return try body()
     }
 
     /// Calls `handler` with each chunk until EOF, `shouldStop()` turns true (checked every 100 ms)
