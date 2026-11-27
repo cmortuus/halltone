@@ -22,22 +22,22 @@ enum Spawn {
 
     struct SpawnError: Error, CustomStringConvertible { let description: String }
 
+    /// Held from creating the pipes until the child has been launched: between `pipe()` and
+    /// `fcntl(FD_CLOEXEC)` (no portable `pipe2` here) a child forked by another thread would inherit
+    /// the write end and the reader would never see EOF. Every launch in this process goes through here.
+    private static let launchLock = NSLock()
+
     static func makePipe() -> (read: Int32, write: Int32)? {
         var fds: [Int32] = [-1, -1]
-        #if os(Linux)
-        // Atomic: other threads spawn children too, and a child forked between pipe() and fcntl()
-        // would inherit the write end and keep the reader from ever seeing EOF.
-        guard pipe2(&fds, O_CLOEXEC) == 0 else { return nil }
-        #else
         guard pipe(&fds) == 0 else { return nil }
         for fd in fds { _ = fcntl(fd, F_SETFD, FD_CLOEXEC) }
-        #endif
         return (fds[0], fds[1])
     }
 
     /// Starts `executable`, optionally capturing stdout / stderr (otherwise /dev/null). stdin is /dev/null.
     static func start(_ executable: String, _ args: [String], captureStdout: Bool, captureStderr: Bool,
                       onExit: ((Process) -> Void)? = nil) throws -> Started {
+        launchLock.lock(); defer { launchLock.unlock() }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: executable)
         p.arguments = args
