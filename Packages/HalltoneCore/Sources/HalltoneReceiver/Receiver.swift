@@ -137,29 +137,27 @@ public final class Receiver {
         didSet { queue.async { [self] in stats.phoneNearMac = phoneNearMac; updatePresence() } }
     }
 
-    /// Notice holes in the stream and ask the Mac for them while there's still time to play them.
+    /// Notice holes in the stream and ask the Mac for them while there's still time to play them
+    /// (see ResendTracker for the reorder window).
     private func trackForResend(session: UInt32, pos: UInt64) {
-        let frame = frameSamplesForResend
+        let frame = Int(frameSamplesForResend)
         guard frame > 0 else { return }
-        if session != newestSession { newestSession = session; newestPos = nil; missing.removeAll() }
-        guard let newest = newestPos else { newestPos = pos; return }
-        if pos <= newest {
-            // Late, reordered or a retransmission.
-            if missing.removeValue(forKey: pos) != nil { stats.resendRecovered += 1 }
-            return
+        if session != newestSession || resendTracker?.frame != UInt64(frame) {
+            newestSession = session
+            resendTracker = ResendTracker(frameSamples: frame)
         }
-        newestPos = pos
-        let gapFrames = (pos - newest) / frame
-        guard gapFrames > 1 else { return }
-        // A hole of more than ~0.5-1 s is an outage or a stream jump, not loss worth chasing
-        // (100 frames, or half a second of 2.5 ms Game-mode frames).
-        guard gapFrames <= max(100, 24_000 / frame) else { return }
-        let t = now()
-        var ask: [UInt64] = []
-        var p = newest + frame
-        while p < pos, ask.count < Packet.maxResend {
-            missing[p] = (t, 1); ask.append(p); p += frame
-        }
+        if resendTracker?.received(pos: pos, at: now(), cap: reorderWindowCap) == true { stats.resendRecovered += 1 }
+        requestDueHoles()
+    }
+
+    /// Longest a hole may stay open before it's requested, never so long the resend can't be played:
+    /// at most 25 % of the jitter buffer's target (and 30 ms).
+    private var reorderWindowCap: TimeInterval { min(0.030, Double(stats.targetMs) * 0.25 / 1000) }
+
+    /// Request every hole that has stayed open for the reorder window.
+    private func requestDueHoles() {
+        guard resendTracker != nil else { return }
+        let ask = resendTracker!.due(at: now(), cap: reorderWindowCap, limit: Packet.maxResend)
         sendResend(ask)
     }
 
@@ -169,18 +167,11 @@ public final class Receiver {
         send(.resend(samplePositions: positions), over: c)
     }
 
-    /// Ask once more for frames still missing after 150 ms; forget them after 2 s.
     private func retryResends() {
-        guard !missing.isEmpty else { return }
-        let t = now()
-        var again: [UInt64] = []
-        for (p, m) in missing {
-            if t - m.asked > 2 { missing.removeValue(forKey: p); continue }
-            if m.tries < 2, t - m.asked > 0.15, again.count < Packet.maxResend {
-                missing[p] = (m.asked, m.tries + 1); again.append(p)
-            }
-        }
-        sendResend(again.sorted())
+        guard resendTracker != nil else { return }
+        requestDueHoles()
+        sendResend(resendTracker!.retries(at: now(), limit: Packet.maxResend))
+        resendTracker!.relax(at: now())
     }
 
     private func updatePresence() {
@@ -264,9 +255,8 @@ public final class Receiver {
     private var lastPacketArrival: TimeInterval?
     /// Retransmission bookkeeping: newest samplePos seen, frames asked for again (pos → when
     /// first asked, tries), and the stream's frame size.
-    private var newestPos: UInt64?
     private var newestSession: UInt32?
-    private var missing: [UInt64: (asked: TimeInterval, tries: Int)] = [:]
+    private var resendTracker: ResendTracker?
     private var frameSamplesForResend: UInt64 = 0
     private var windowArrivalGap: TimeInterval = 0
 
@@ -493,6 +483,7 @@ public final class Receiver {
             let t = self.now()
             if let last = self.lastTimerFire { self.windowTimerGap = max(self.windowTimerGap, t - last) }
             self.lastTimerFire = t
+            self.requestDueHoles()   // holes whose reorder window ran out between packets
             guard !self.onCellular, case .subscribed = self.state, let c = self.connection else { return }
             c.send(content: self.nudgePacket, completion: .idempotent)
         }
