@@ -44,7 +44,7 @@ esac
 """
 
 @Suite(.serialized, .timeLimit(.minutes(3))) struct FDLeakTests {
-    private let slack = 25
+    private let slack = 60   // other suites (presence, MPRIS) spawn helpers in parallel; the 0.1.0 leak was ~600
     private let calls = 300
 
     @Test func commandRunnerClosesItsPipesOnEveryPath() throws {

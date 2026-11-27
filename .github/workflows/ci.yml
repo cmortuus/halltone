@@ -111,6 +111,11 @@ jobs:
           HALLTONE_SHOW_LOG: "1"
           PULSE_SERVER: unix:/tmp/pulse-ci/native
         run: dbus-run-session -- stdbuf -oL -eL timeout 300 swift test --filter LocalDialogIntegrationTests
+      - name: Test (presence flags against a fake GNOME IdleMonitor and ScreenSaver on a private session bus)
+        working-directory: Linux/halltone-linux
+        env:
+          HALLTONE_DBUS_TEST: "1"
+        run: dbus-run-session -- stdbuf -oL -eL timeout 300 swift test --filter PresenceDBusTests
       - name: PulseAudio log (on failure)
         if: failure()
         run: cat /tmp/pulse-ci/log || true
