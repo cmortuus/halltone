@@ -159,19 +159,8 @@ public final class MacLocator {
 
     static func browse() -> [AvahiService] {
         guard let exe = Self.find("avahi-browse") else { return [] }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: exe)
-        p.arguments = ["-r", "-t", "-p", "_halltone._udp"]
-        let out = Pipe()
-        p.standardOutput = out
-        p.standardError = FileHandle.nullDevice
-        do { try p.run() } catch { return [] }
-        let killer = DispatchWorkItem { if p.isRunning { p.terminate() } }
-        DispatchQueue.global().asyncAfter(deadline: .now() + 6, execute: killer)
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        killer.cancel()
-        return parseAvahi(String(decoding: data, as: UTF8.self))
+        guard let r = CommandRunner.run(exe, ["-r", "-t", "-p", "_halltone._udp"], timeout: 6) else { return [] }
+        return parseAvahi(r.stdout)
     }
 
     static func find(_ tool: String) -> String? {

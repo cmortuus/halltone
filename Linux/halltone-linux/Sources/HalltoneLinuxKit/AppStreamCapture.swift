@@ -98,26 +98,29 @@ public final class AppStreamCapture {
     }
 
     private func launch(parec: String, index: Int) {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: parec)
-        p.arguments = ["--monitor-stream=\(index)", "--format=float32le", "--rate=48000", "--channels=2",
-                       "--raw", "--latency-msec=20", "--client-name=halltone-dialog"]
-        let out = Pipe()
-        p.standardOutput = out
-        p.standardError = FileHandle.nullDevice
-        do { try p.run() } catch {
+        let started: Spawn.Started
+        do {
+            started = try Spawn.start(parec, ["--monitor-stream=\(index)", "--format=float32le", "--rate=48000", "--channels=2",
+                                              "--raw", "--latency-msec=20", "--client-name=halltone-dialog"],
+                                      captureStdout: true, captureStderr: false)
+        } catch {
             log.error("can't start parec: \(error.localizedDescription, privacy: .public)")
             return
         }
+        let p = started.process
+        guard let fd = started.stdout else { return }
         lock.lock(); process = p; lock.unlock()
         log.notice("analyzing \"\(self.app, privacy: .public)\" (sink input \(index)) for dialog")
         let tap = self.tap
         let t = Thread {
-            let h = out.fileHandleForReading
             var carry = Data()
-            while true {
-                let d = h.availableData
-                if d.isEmpty { break }
+            // Ends at EOF (stopProcess terminates parec) and closes the descriptor; the check is a
+            // backstop for a parec that lingers after it was replaced.
+            Spawn.readChunks(fd, shouldStop: { [weak self] in
+                guard let self else { return true }
+                self.lock.lock(); defer { self.lock.unlock() }
+                return self.process !== p && !p.isRunning
+            }) { d in
                 carry.append(d)
                 let usable = carry.count - carry.count % 8   // whole stereo float frames
                 if usable > 0 {
@@ -142,16 +145,8 @@ public final class AppStreamCapture {
     }
 
     static func listSinkInputsJSON(pactl: String) -> Data? {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: pactl)
-        p.arguments = ["-f", "json", "list", "sink-inputs"]
-        let out = Pipe()
-        p.standardOutput = out
-        p.standardError = FileHandle.nullDevice
-        do { try p.run() } catch { return nil }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        guard p.terminationStatus == 0 else { return nil }
+        guard let r = CommandRunner.run(pactl, ["-f", "json", "list", "sink-inputs"], timeout: 5), r.status == 0 else { return nil }
+        let data = r.stdoutData
         return data
     }
 

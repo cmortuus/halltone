@@ -93,20 +93,19 @@ public final class AvahiAdvertiser {
             }
             return
         }
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: exe)
-        p.arguments = Self.arguments(name: name, port: port, txt: baseTXT, addresses: now)
-        p.standardOutput = FileHandle.nullDevice
-        let err = Pipe()
-        p.standardError = err
-        p.terminationHandler = { [weak self] proc in
-            let text = String(decoding: err.fileHandleForReading.availableData, as: UTF8.self)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let self, !self.stopped, proc.terminationReason != .uncaughtSignal else { return }
-            log.error("avahi-publish-service exited (\(proc.terminationStatus)): \(text, privacy: .public)")
-        }
+        let errBox = FDBox()
         do {
-            try p.run()
+            let s = try Spawn.start(exe, Self.arguments(name: name, port: port, txt: baseTXT, addresses: now),
+                                    captureStdout: false, captureStderr: true) { [weak self] proc in
+                // The child is gone, so stderr hits EOF at once (the deadline covers a stray grandchild).
+                let deadline = Date().addingTimeInterval(0.5)
+                let text = errBox.take().map { String(decoding: Spawn.drain($0, shouldStop: { Date() > deadline }), as: UTF8.self) }?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                guard let self, !self.stopped, proc.terminationReason != .uncaughtSignal else { return }
+                log.error("avahi-publish-service exited (\(proc.terminationStatus)): \(text, privacy: .public)")
+            }
+            errBox.set(s.stderr)
+            let p = s.process
             process = p
             published = (now, Date())
             warnedMissing = false
@@ -122,4 +121,16 @@ public final class AvahiAdvertiser {
         process = nil
         if p.isRunning { p.terminate() }
     }
+}
+
+/// Hands the stderr read end from `launch` to the termination handler, which may run on another
+/// thread, even before `launch` has stored it. Whoever ends up holding the descriptor closes it:
+/// the handler (after reading) or `set` itself when the handler already ran.
+private final class FDBox {
+    private let lock = NSLock(); private var fd: Int32?; private var taken = false
+    func set(_ v: Int32?) {
+        lock.lock(); defer { lock.unlock() }
+        if taken { if let v { close(v) } } else { fd = v }
+    }
+    func take() -> Int32? { lock.lock(); defer { lock.unlock() }; taken = true; let v = fd; fd = nil; return v }
 }

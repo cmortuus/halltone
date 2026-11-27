@@ -223,6 +223,64 @@ open class SenderCore {
         timer.resume()
         self.timer = timer
         installOutputDeviceListener(on: queue)
+        startWatchdog()
+    }
+
+    // MARK: - Watchdog
+
+    /// How long a listening phone may go without any AUDIO packet while capture runs before the
+    /// watchdog logs the state of every queue and restarts capture. Overridable for tests.
+    public var watchdogStallSeconds: Double = 2
+    /// Capture restarts the watchdog has made (tests, diagnostics).
+    public let watchdogRestarts = AtomicCounter()
+
+    /// Own thread, deliberately independent of `queue` and `captureQueue` (either may be the thing
+    /// that is stuck). Field failure: a sender with a phone subscribed went silent for 90 s while the
+    /// process stayed alive; only a restart helped, and nothing in the log said why.
+    private func startWatchdog() {
+        let t = Thread { [weak self] in
+            var lastCount = self?.packetsCounter.load() ?? 0
+            var lastChange = DispatchTime.now().uptimeNanoseconds
+            var lastRestart: UInt64 = 0
+            while let self, self.running {
+                Thread.sleep(forTimeInterval: 0.25)
+                let now = DispatchTime.now().uptimeNanoseconds
+                let count = self.packetsCounter.load()
+                if count != lastCount { lastCount = count; lastChange = now; continue }
+                let started = self.captureStartedNs.load()
+                guard self.hasListeningSubscriber, started != 0 else { lastChange = now; continue }
+                let stalled = Double(now &- max(lastChange, started)) / 1e9
+                guard stalled >= self.watchdogStallSeconds, now &- lastRestart > 10_000_000_000 else { continue }
+                lastRestart = now
+                self.watchdogRestarts.add(1)
+                self.reportStall(seconds: stalled)
+                self.restartCapture()
+                lastChange = now
+            }
+        }
+        t.name = "com.halltone.watchdog"
+        t.start()
+    }
+
+    private func reportStall(seconds: Double) {
+        let q = AtomicCounter(), c = AtomicCounter()
+        queue.async { q.add(1) }
+        captureQueue.async { c.add(1) }
+        Thread.sleep(forTimeInterval: 0.3)
+        log.error("WATCHDOG: no AUDIO sent for \(String(format: "%.1f", seconds), privacy: .public) s with a listening phone and capture running. sender queue \(q.load() > 0 ? "responsive" : "BLOCKED", privacy: .public), capture queue \(c.load() > 0 ? "responsive" : "BLOCKED", privacy: .public), packets \(self.packetsCounter.load()), encoding \(self.encoding), source generation \(self.sourceGeneration.load()). Threads: \(Self.threadStates(), privacy: .public). Restarting capture.")
+    }
+
+    /// `name:state:wait-channel` of every thread (Linux /proc; empty elsewhere).
+    public static func threadStates() -> String {
+        let base = "/proc/self/task"
+        guard let tids = try? FileManager.default.contentsOfDirectory(atPath: base) else { return "n/a" }
+        func read(_ p: String) -> String? { (try? String(contentsOfFile: p, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) }
+        return tids.sorted().compactMap { tid -> String? in
+            guard let name = read("\(base)/\(tid)/comm") else { return nil }
+            let stat = read("\(base)/\(tid)/stat") ?? ""
+            let state = stat.split(separator: ")").last?.split(separator: " ").first.map(String.init) ?? "?"
+            return "\(name)[\(tid)]:\(state):\(read("\(base)/\(tid)/wchan") ?? "-")"
+        }.joined(separator: " ")
     }
 
     /// Platform hook: registers `_halltone._udp` for `config.port` with `txtValues` (plus any

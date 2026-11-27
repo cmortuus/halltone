@@ -24,19 +24,27 @@ public final class LinuxSender: SenderCore {
             remoteControlEnabled = { false }
             return
         }
-        controlsAvailable = { media.controlsAvailable() }
-        playbackState = { media.peekPlaying() }
+        controlsAvailable = { media.controlsAvailableCached() }
+        playbackState = { media.peekPlayingCached() }
         remoteEnvironment = media
         remoteControlEnabled = { allowRemoteControl }
+        // Media keys run on the MPRIS queue and the receive path waits at most 0.5 s for the answer:
+        // a wedged bus must not hold up the receive thread (an unanswered key counts as sent).
+        let mediaKeys = DispatchQueue(label: "com.halltone.mpris.keys")
         onControl = { command in
+            let key: MediaCommand
             switch command {
-            case .playPause: return media.perform(.playPause)
-            case .next: return media.perform(.next)
-            case .previous: return media.perform(.previous)
-            case .pause: return media.perform(.pause)
-            case .play: return media.perform(.play)
+            case .playPause: key = .playPause
+            case .next: key = .next
+            case .previous: key = .previous
+            case .pause: key = .pause
+            case .play: key = .play
             default: return true // settings (holds, listening) aren't media keys
             }
+            let done = DispatchSemaphore(value: 0)
+            let box = ResultBox()
+            mediaKeys.async { box.set(media.perform(key)); done.signal() }
+            return done.wait(timeout: .now() + 0.5) == .success ? box.value : true
         }
     }
 
@@ -144,4 +152,10 @@ public final class LinuxRuntime {
             return "error: unknown command \"\(command)\" (on, off, toggle, status, status --json)"
         }
     }
+}
+
+private final class ResultBox: @unchecked Sendable {
+    private let lock = NSLock(); private var v = true
+    func set(_ x: Bool) { lock.lock(); v = x; lock.unlock() }
+    var value: Bool { lock.lock(); defer { lock.unlock() }; return v }
 }

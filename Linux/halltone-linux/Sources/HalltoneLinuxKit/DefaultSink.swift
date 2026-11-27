@@ -7,18 +7,9 @@ import Foundation
 enum DefaultSink {
     /// nil when pactl is missing or the server isn't reachable.
     static func current() -> String? {
-        let p = Process()
-        guard let exe = locate() else { return nil }
-        p.executableURL = URL(fileURLWithPath: exe)
-        p.arguments = ["get-default-sink"]
-        let out = Pipe()
-        p.standardOutput = out
-        p.standardError = FileHandle.nullDevice
-        do { try p.run() } catch { return nil }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        guard p.terminationStatus == 0 else { return nil }
-        return parse(String(decoding: data, as: UTF8.self))
+        guard let exe = locate(),
+              let r = CommandRunner.run(exe, ["get-default-sink"], timeout: 3), r.status == 0 else { return nil }
+        return parse(r.stdout)
     }
 
     static func parse(_ output: String) -> String? {
