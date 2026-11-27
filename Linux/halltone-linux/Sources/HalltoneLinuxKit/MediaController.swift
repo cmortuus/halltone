@@ -199,6 +199,46 @@ public final class MediaController: ExplicitPlaybackEnvironment {
         return eligible.contains { $0.status == .playing }
     }
 
+    // MARK: - Hot-path readers (never block)
+
+    private var refreshInFlight = false
+
+    /// Starts a background refresh on the MPRIS queue unless the snapshot is younger than `maxAge`
+    /// or one is already running. Returns at once: nothing on the sender's queue, the encode path or
+    /// the control socket may wait for `busctl`, which can wedge with the bus.
+    private func kickRefresh(maxAge: TimeInterval) {
+        lock.lock()
+        let stale = snapshotAt == nil || clock() - snapshotAt! > maxAge
+        if !stale || refreshInFlight { lock.unlock(); return }
+        refreshInFlight = true
+        lock.unlock()
+        pollQueue.async { [weak self] in
+            guard let self else { return }
+            self.refresh()
+            self.lock.lock(); self.refreshInFlight = false; self.lock.unlock()
+        }
+    }
+
+    /// `controlsAvailable()` from the last snapshot, without ever running `busctl` on the caller.
+    /// `demand: false` (the tray's `status --json`) doesn't keep the once-a-second background poll
+    /// alive; it only refreshes if the snapshot is older than `maxAge`.
+    public func controlsAvailableCached(demand: Bool = true, maxAge: TimeInterval = 1) -> Bool {
+        if demand { noteDemand() }
+        kickRefresh(maxAge: maxAge)
+        lock.lock(); defer { lock.unlock() }
+        return snapshot.contains(where: isEligible)
+    }
+
+    /// `peekPlaying()` from the last snapshot, without ever running `busctl` on the caller.
+    public func peekPlayingCached() -> Bool? {
+        noteDemand()
+        kickRefresh(maxAge: 1)
+        lock.lock(); defer { lock.unlock() }
+        let eligible = snapshot.filter(isEligible)
+        guard snapshotOK, !eligible.isEmpty else { return nil }
+        return eligible.contains { $0.status == .playing }
+    }
+
     private func noteDemand() { lock.lock(); lastDemandAt = clock(); lock.unlock() }
 
     /// Keeps the snapshot fresh in the background (every `interval` seconds) so STATUS never waits on

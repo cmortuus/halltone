@@ -92,7 +92,7 @@ esac
     }
 }
 
-private final class CountingBackend: MPRISBackend {
+final class CountingBackend: MPRISBackend {
     private let inner: MPRISBackend
     private let lock = NSLock()
     private var n = 0
@@ -100,4 +100,32 @@ private final class CountingBackend: MPRISBackend {
     var calls: Int { lock.lock(); defer { lock.unlock() }; return n }
     func players() throws -> [MPRISPlayer] { lock.lock(); n += 1; lock.unlock(); return try inner.players() }
     func send(_ command: MPRISCommand, to bus: String) -> Bool { inner.send(command, to: bus) }
+}
+
+/// The tray polls `status --json` every 2 s. That must not run `busctl` per poll (and so not leak
+/// or stall), and it must not keep the once-a-second background poll alive.
+@Suite(.serialized, .timeLimit(.minutes(2))) struct StatusPollTests {
+    @Test func statusJSONHammerKeepsFDsFlat() throws {
+        let rt = try LinuxRuntime(config: StatusReportTests.config())
+        for _ in 0..<5 { _ = rt.handleControl("status --json") }
+        Thread.sleep(forTimeInterval: 0.5)
+        let before = try #require(settledFDs())
+        for _ in 0..<500 {
+            let j = try StatusReportTests.json(rt.handleControl("status --json"))
+            #expect(j["name"] as? String == "Rig")
+        }
+        let after = try #require(settledFDs())
+        print("FDCOUNT statusJSON before=\(before) after=\(after) requests=500")
+        #expect(after - before <= 25, "fd count grew from \(before) to \(after)")
+    }
+
+    @Test func tryPollingDoesNotSpawnPerRequest() {
+        let f = FakeMPRIS(); f.add("mpv", .playing)
+        let counter = CountingBackend(f)
+        let m = MediaController(backend: counter)
+        m.startPolling(interval: 0.05); defer { m.stopPolling() }
+        for _ in 0..<500 { _ = m.controlsAvailableCached(demand: false, maxAge: 10); _ = m.chosen(); Thread.sleep(forTimeInterval: 0.002) }
+        Thread.sleep(forTimeInterval: 0.3)
+        #expect(counter.calls <= 2, "\(counter.calls) bus refreshes for 500 tray polls")
+    }
 }

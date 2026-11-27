@@ -46,7 +46,7 @@ extension LinuxRuntime {
         }
         o["dialog"] = d
 
-        var m: [String: Any] = ["available": media.controlsAvailable()]
+        var m: [String: Any] = ["available": media.controlsAvailableCached(demand: false, maxAge: 10)]
         if let p = media.chosen() {
             m["player"] = p.shortName
             m["status"] = p.status.rawValue.lowercased()
