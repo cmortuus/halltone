@@ -72,6 +72,10 @@ jobs:
       - name: Build (release, as install.sh does)
         working-directory: Linux/halltone-linux
         run: swift build -c release && .build/release/halltone-linux --version
+      - name: Test halltone-tray headless (model unit tests; then the real daemon + `halltone-tray --dump`)
+        run: |
+          python3 -m unittest discover -v -s Linux/tray
+          Linux/tray/dump-test.sh Linux/halltone-linux/.build/release/halltone-linux
       - name: Test (unit + integration with the tone source; dialog pause against a fake Mac)
         working-directory: Linux/halltone-linux
         env:

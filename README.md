@@ -61,7 +61,7 @@ The Mac only captures audio while a subscriber is alive.
 | `Packages/HalltoneDialog` | Standalone SwiftPM package (no Apple frameworks; macOS + Linux): real-time **dialog detector** for 48 kHz stereo game audio (center extraction + vendored libfvad + level/band/modulation gates + hysteresis), and the `halltone-dialog-eval` tool. See its [README](Packages/HalltoneDialog/README.md). |
 | `HalltoneMac` | macOS menu bar app (SwiftUI `MenuBarExtra`). |
 | `HalltonePhone` | iOS app. |
-| `Linux/halltone-linux` | The Ubuntu sender (`halltone-linux`): PulseAudio/PipeWire capture + Avahi on top of `HalltoneSenderCore`, `install.sh`, systemd user unit. See [Linux (Ubuntu) sender](#linux-ubuntu-sender). |
+| `Linux/halltone-linux` | The Ubuntu sender (`halltone-linux`): PulseAudio/PipeWire capture + Avahi on top of `HalltoneSenderCore`, `install.sh`, systemd user unit. `Linux/tray`: `halltone-tray`, its top-bar icon and menu. See [Linux (Ubuntu) sender](#linux-ubuntu-sender). |
 | `Tools/halltone-cli` | macOS test tool: capture to WAV, loopback sender/receiver, impairment simulation, latency report, acoustic end-to-end latency (`measure`). |
 | `project.yml` | XcodeGen spec → `xcodegen generate` → `Halltone.xcodeproj`. |
 
@@ -171,8 +171,31 @@ Signing key fingerprint: `CC98 6414 E18A B806 302D EA35 935D EAC1 4767 7FAF` (ar
 
 The package installs `/usr/bin/halltone-linux` and a user unit; the pairing code is in
 `journalctl --user -u halltone -n 20`. After an upgrade run `systemctl --user restart halltone`.
+After installing, log out and in (or run `halltone-tray &`) for the top-bar icon.
 `Linux/install.sh` above remains the build-from-source path. To build the package yourself:
 `Linux/packaging/build-deb.sh <version>`.
+
+**Top-bar icon (`halltone-tray`).** Like the Mac's menu-bar item: a Halltone icon in the top bar
+(headphones; with sound bars while streaming, struck through when the daemon isn't running). It
+ships in the `.deb` and in `install.sh`, starts at login (`/etc/xdg/autostart/halltone-tray.desktop`;
+run `halltone-tray &` to start it now) and reads the daemon over the control socket
+(`status --json`; the same socket as `halltone-linux dialog ...`). The menu shows:
+
+- a status line (`Streaming to <phone>` / `Waiting for a phone` / `Not running`, or `Capture failed: ...`),
+  with kbps and, per listener, its address, buffer and loss;
+- the pairing code (click to copy), the PC's name, codec and port;
+- toggles: **Dialog pause** (switches the running daemon and saves `dialogPause.enabled`; greyed out
+  until dialog pause is configured) and **Game mode** (PCM 2.5 ms; off = Opus, saved to the config
+  and the service restarted); the controlled media player;
+- **Restart Halltone**, **Show logs** (a terminal running `journalctl --user -u halltone -f`) and
+  **Quit tray**. When the daemon isn't running the menu offers **Start Halltone**
+  (`systemctl --user start halltone`).
+
+Ubuntu's GNOME shows it through the AppIndicator extension (`ubuntu-appindicators@ubuntu.com`, on by
+default; `gnome-shell-extension-appindicator`). The package depends on `python3-gi` and
+`gir1.2-ayatanaappindicator3-0.1`. `halltone-tray --dump` prints the menu as text without a display
+(handy over SSH). Tests: `python3 -m unittest discover -s Linux/tray` (the menu model against a fake
+daemon) and `Linux/tray/dump-test.sh <halltone-linux>` (against the real daemon); CI runs both.
 
 **How it works.** Capture uses the PulseAudio simple API from `@DEFAULT_MONITOR@` (whatever the
 default output plays) at 48 kHz float32 stereo with 2.5 ms fragments. That works on PipeWire through

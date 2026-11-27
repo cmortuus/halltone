@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Halltone tray
+Comment=Top-bar icon for the Halltone audio sender
+Exec=halltone-tray
+Icon=halltone-idle-symbolic
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=3

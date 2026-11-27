@@ -1,0 +1,450 @@
+#!/usr/bin/python3
+"""halltone-tray: the top-bar (AppIndicator) icon and menu for halltone-linux.
+
+Talks to the running daemon over its control socket ("status --json", "on", "off"), the same
+socket `halltone-linux dialog ...` uses. The menu is built by pure functions (build_menu,
+fetch_status) so it can be tested without a display; GTK is only imported by run_gtk().
+
+    halltone-tray                 run the tray icon
+    halltone-tray --dump          print the menu as text and exit (no display needed)
+    halltone-tray --socket PATH   control socket (default $XDG_RUNTIME_DIR/halltone-linux.sock)
+    halltone-tray --config PATH   config file (default ~/.config/halltone/config.json)
+"""
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import time
+
+SERVICE = "halltone"
+POLL_SECONDS = 2
+
+ICON_IDLE = "halltone-idle-symbolic"
+ICON_STREAMING = "halltone-streaming-symbolic"
+ICON_ERROR = "halltone-error-symbolic"
+
+
+# ---------------------------------------------------------------- daemon access
+
+def socket_path(env=None):
+    env = os.environ if env is None else env
+    run = env.get("XDG_RUNTIME_DIR", "")
+    if run.startswith("/"):
+        return run + "/halltone-linux.sock"
+    return "/tmp/halltone-linux-%d.sock" % os.getuid()
+
+
+def config_path(env=None):
+    env = os.environ if env is None else env
+    base = env.get("XDG_CONFIG_HOME", "")
+    if not base.startswith("/"):
+        base = os.path.join(env.get("HOME") or os.path.expanduser("~"), ".config")
+    return base + "/halltone/config.json"
+
+
+def request(path, line, timeout=2.0):
+    """One line in, the whole reply out. Raises OSError when nothing is listening."""
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        s.connect(path)
+        s.sendall(line.encode() + b"\n")
+        chunks = []
+        while True:
+            data = s.recv(65536)
+            if not data:
+                break
+            chunks.append(data)
+        return b"".join(chunks).decode("utf-8", "replace").strip()
+    finally:
+        s.close()
+
+
+def fetch_status(path, timeout=2.0):
+    """The daemon's status dict, or None when it isn't running / doesn't answer sensibly."""
+    try:
+        reply = request(path, "status --json", timeout)
+        data = json.loads(reply)
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+# ---------------------------------------------------------------- the menu model
+
+def format_loss(permille):
+    return "%.1f%%" % (permille / 10.0)
+
+
+def describe_stream(st):
+    if st.get("codec") == "opus":
+        return "Opus 10 ms"
+    frame = st.get("frameMs", 2.5)
+    frame = ("%g" % frame)
+    return "PCM %s ms%s" % (frame, " (Game mode)" if st.get("gameMode") else "")
+
+
+def icon_for(status):
+    if status is None or status.get("captureError"):
+        return ICON_ERROR
+    return ICON_STREAMING if status.get("streaming") else ICON_IDLE
+
+
+def status_line(status, note=None):
+    if note:
+        return note
+    if status is None:
+        return "Not running"
+    if status.get("captureError"):
+        return "Capture failed: %s" % status["captureError"]
+    names = [l.get("name", "?") for l in status.get("listeners", [])]
+    if names:
+        return "Streaming to %s" % ", ".join(names)
+    return "Waiting for a phone"
+
+
+def item(kind, label="", action=None, enabled=True, checked=False):
+    return {"kind": kind, "label": label, "action": action, "enabled": enabled, "checked": checked}
+
+
+def build_menu(status, note=None):
+    """The menu as a list of items: kind is label | action | check | separator."""
+    m = [item("label", status_line(status, note), enabled=False)]
+    if status is None:
+        m += [item("separator"),
+              item("action", "Start Halltone", "start"),
+              item("action", "Show logs", "logs"),
+              item("separator"),
+              item("action", "Quit tray", "quit")]
+        return m
+
+    if status.get("streaming"):
+        m.append(item("label", "%d kbps · %d pkt/s" % (status.get("kbps", 0), status.get("pps", 0)), enabled=False))
+    for l in status.get("listeners", []):
+        m.append(item("label", "   %s (%s): buffer %d ms, loss %s" % (
+            l.get("name", "?"), l.get("address", "?"), l.get("bufferMs", 0), format_loss(l.get("lossPermille", 0))), enabled=False))
+    m.append(item("separator"))
+
+    m.append(item("action", "Pairing code: %s   (click to copy)" % status.get("pairingCode", "?"), "copy_code"))
+    m.append(item("label", "%s · %s · udp/%s" % (status.get("name", "?"), describe_stream(status), status.get("port", "?")), enabled=False))
+    m.append(item("separator"))
+
+    d = status.get("dialog") or {}
+    if d.get("configured"):
+        where = "this PC's player" if d.get("target") == "local" else "the Mac's video"
+        m.append(item("check", "Dialog pause", "toggle_dialog", checked=bool(d.get("enabled"))))
+        if d.get("loopGuardTripped"):
+            m.append(item("label", "   Loop guard tripped: turn off and on to clear", enabled=False))
+        elif d.get("enabled") and d.get("phase") in ("paused", "resuming"):
+            m.append(item("label", "   Paused %s for dialog" % where, enabled=False))
+    else:
+        m.append(item("check", "Dialog pause (not configured)", "toggle_dialog", enabled=False))
+    m.append(item("check", "Game mode (lowest latency)", "toggle_game", checked=bool(status.get("gameMode"))))
+
+    media = status.get("media") or {}
+    if media.get("player"):
+        m.append(item("label", "Media: %s (%s)" % (media["player"], media.get("status", "?")), enabled=False))
+    m += [item("separator"),
+          item("action", "Restart Halltone", "restart"),
+          item("action", "Show logs", "logs"),
+          item("separator"),
+          item("action", "Quit tray", "quit")]
+    return m
+
+
+def dump_menu(status, note=None):
+    lines = ["icon: " + icon_for(status)]
+    for it in build_menu(status, note):
+        if it["kind"] == "separator":
+            lines.append("  ------------------------------")
+            continue
+        box = {"check": "[x] " if it["checked"] else "[ ] "}.get(it["kind"], "")
+        lines.append("  %s%s%s" % (box, it["label"], "" if it["enabled"] else "   (disabled)" if it["kind"] != "label" else ""))
+    return "\n".join(lines)
+
+
+def menu_shape(items):
+    """What must match for a menu to be updated in place instead of rebuilt."""
+    return [(i["kind"], i["action"]) for i in items]
+
+
+# ---------------------------------------------------------------- config edits
+
+def read_config(path):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+
+
+def write_config(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def set_game_mode(path, on):
+    """Game mode = PCM in 2.5 ms frames. Off = Opus (the Mac's default too). Keeps every other key."""
+    c = read_config(path)
+    if on:
+        c["codec"], c["frameMs"] = "pcm", 2.5
+    else:
+        c["codec"], c["frameMs"] = "opus", 10
+    write_config(path, c)
+
+
+def set_dialog_enabled(path, on):
+    c = read_config(path)
+    d = c.get("dialogPause")
+    if not isinstance(d, dict):
+        d = {}
+    d["enabled"] = bool(on)
+    c["dialogPause"] = d
+    write_config(path, c)
+
+
+# ---------------------------------------------------------------- commands
+
+def service_command(verb):
+    return ["systemctl", "--user", verb, SERVICE]
+
+
+def logs_command():
+    return ["journalctl", "--user", "-u", SERVICE, "-f"]
+
+
+def terminal_command(which=shutil.which):
+    """A terminal that runs the logs command, or None when none is installed."""
+    logs = logs_command()
+    candidates = [
+        ("x-terminal-emulator", ["-e"]),
+        ("gnome-terminal", ["--"]),
+        ("kgx", ["-e"]),
+        ("konsole", ["-e"]),
+        ("xfce4-terminal", ["-x"]),
+        ("xterm", ["-e"]),
+    ]
+    for name, flag in candidates:
+        exe = which(name)
+        if exe:
+            return [exe] + flag + logs
+    return None
+
+
+# ---------------------------------------------------------------- GTK front end
+
+def run_gtk(sock, cfg):
+    import threading
+    import gi
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import GLib, Gtk
+    try:
+        gi.require_version("AyatanaAppIndicator3", "0.1")
+        from gi.repository import AyatanaAppIndicator3 as AppIndicator
+    except (ValueError, ImportError):
+        gi.require_version("AppIndicator3", "0.1")
+        from gi.repository import AppIndicator3 as AppIndicator
+
+    indicator = AppIndicator.Indicator.new("halltone", ICON_ERROR, AppIndicator.IndicatorCategory.APPLICATION_STATUS)
+    indicator.set_status(AppIndicator.IndicatorStatus.ACTIVE)
+    indicator.set_title("Halltone")
+
+    state = {"status": None, "note": None, "items": [], "widgets": [], "menu": None, "busy": False, "note_at": 0.0}
+    updating = [False]
+
+    def say(text):
+        state["note"] = text
+        state["note_at"] = time.monotonic()
+
+    def run_async(argv, then=None):
+        def work():
+            try:
+                r = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+                err = (r.stderr or "").strip().splitlines()
+                failed = err[-1] if r.returncode != 0 and err else (None if r.returncode == 0 else "failed")
+            except (OSError, subprocess.SubprocessError) as e:
+                failed = str(e)
+            GLib.idle_add(done, failed)
+        def done(failed):
+            say(("Failed: %s" % failed) if failed else None)
+            if then:
+                then()
+            refresh()
+            return False
+        threading.Thread(target=work, daemon=True).start()
+
+    def act(name):
+        if name == "quit":
+            Gtk.main_quit()
+        elif name == "start":
+            say("Starting…")
+            render()
+            run_async(service_command("start"), then=lambda: GLib.timeout_add(1500, refresh_once))
+        elif name == "restart":
+            say("Restarting…")
+            render()
+            run_async(service_command("restart"), then=lambda: GLib.timeout_add(1500, refresh_once))
+        elif name == "logs":
+            cmd = terminal_command()
+            if cmd is None:
+                say("No terminal found; run: journalctl --user -u halltone -f")
+                render()
+            else:
+                subprocess.Popen(cmd, start_new_session=True)
+        elif name == "copy_code":
+            code = (state["status"] or {}).get("pairingCode")
+            if code is not None:
+                from gi.repository import Gdk
+                Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text(str(code), -1)
+        elif name == "toggle_dialog":
+            on = not bool(((state["status"] or {}).get("dialog") or {}).get("enabled"))
+            try:
+                set_dialog_enabled(cfg, on)
+                reply = request(sock, "on" if on else "off")
+                say(reply if reply.startswith("error") else None)
+            except OSError as e:
+                say("Dialog pause: %s" % e)
+            refresh()
+        elif name == "toggle_game":
+            on = not bool((state["status"] or {}).get("gameMode"))
+            try:
+                set_game_mode(cfg, on)
+            except OSError as e:
+                say("Can't write config: %s" % e)
+                render()
+                return
+            say("Restarting…")
+            render()
+            run_async(service_command("restart"), then=lambda: GLib.timeout_add(1500, refresh_once))
+
+    def on_activate(_widget, name):
+        if not updating[0]:
+            act(name)
+
+    def build_widgets(items):
+        menu = Gtk.Menu()
+        widgets = []
+        for it in items:
+            if it["kind"] == "separator":
+                w = Gtk.SeparatorMenuItem()
+            elif it["kind"] == "check":
+                w = Gtk.CheckMenuItem.new_with_label(it["label"])
+                w.connect("activate", on_activate, it["action"])
+            else:
+                w = Gtk.MenuItem.new_with_label(it["label"])
+                if it["kind"] == "action":
+                    w.connect("activate", on_activate, it["action"])
+            w.show()
+            menu.append(w)
+            widgets.append(w)
+        return menu, widgets
+
+    def render():
+        items = build_menu(state["status"], state["note"])
+        indicator.set_icon_full(icon_for(state["status"]), "Halltone")
+        if state["menu"] is None or menu_shape(items) != menu_shape(state["items"]):
+            menu, widgets = build_widgets(items)
+            state["menu"], state["widgets"] = menu, widgets
+            indicator.set_menu(menu)
+        updating[0] = True
+        try:
+            for w, it in zip(state["widgets"], items):
+                if it["kind"] == "separator":
+                    continue
+                if w.get_label() != it["label"]:
+                    w.set_label(it["label"])
+                w.set_sensitive(it["enabled"])
+                if it["kind"] == "check":
+                    w.set_active(it["checked"])
+        finally:
+            updating[0] = False
+        state["items"] = items
+
+    def refresh():
+        if state["busy"]:
+            return True
+        state["busy"] = True
+
+        def work():
+            st = fetch_status(sock)
+            GLib.idle_add(apply, st)
+        def apply(st):
+            state["busy"] = False
+            state["status"] = st
+            if state["note"] and time.monotonic() - state["note_at"] > 8:
+                state["note"] = None     # a notice (Restarting…, a failure) lasts a few seconds
+            render()
+            return False
+        threading.Thread(target=work, daemon=True).start()
+        return True
+
+    def refresh_once():
+        refresh()
+        return False
+
+    render()
+    refresh()
+    GLib.timeout_add_seconds(POLL_SECONDS, refresh)
+    Gtk.main()
+
+
+# ---------------------------------------------------------------- entry point
+
+def single_instance_lock():
+    """Holds an flock for the process lifetime; None when another tray already runs."""
+    import fcntl
+    run = os.environ.get("XDG_RUNTIME_DIR", "")
+    path = (run if run.startswith("/") else "/tmp") + "/halltone-tray-%d.lock" % os.getuid()
+    f = open(path, "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return None
+    return f
+
+
+def main(argv):
+    sock, cfg, dump = socket_path(), config_path(), False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--dump":
+            dump = True
+        elif a == "--socket" and i + 1 < len(argv):
+            i += 1
+            sock = argv[i]
+        elif a == "--config" and i + 1 < len(argv):
+            i += 1
+            cfg = argv[i]
+        elif a in ("-h", "--help"):
+            print(__doc__.strip())
+            return 0
+        else:
+            print("halltone-tray: unknown option %s (see --help)" % a, file=sys.stderr)
+            return 2
+        i += 1
+    if dump:
+        print(dump_menu(fetch_status(sock)))
+        return 0
+    lock = single_instance_lock()
+    if lock is None:
+        print("halltone-tray: already running", file=sys.stderr)
+        return 0
+    try:
+        run_gtk(sock, cfg)
+    except (ImportError, ValueError) as e:
+        print("halltone-tray: GTK / AppIndicator bindings missing (%s). Install: sudo apt install python3-gi gir1.2-ayatanaappindicator3-0.1" % e, file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
