@@ -59,6 +59,7 @@ esac
         for _ in 0..<30 { #expect(CommandRunner.run("/bin/sleep", ["30"], timeout: 0.05) == nil) }  // timeout
         for _ in 0..<calls { #expect(CommandRunner.run("/nonexistent/program", [], timeout: 1) == nil) } // can't launch
         let after = try #require(settledFDs())
+        print("FDCOUNT commandRunner before=\(before) after=\(after)")
         #expect(after - before <= slack, "fd count grew from \(before) to \(after)")
     }
 
@@ -72,6 +73,7 @@ esac
         let before = try #require(settledFDs())
         for _ in 0..<calls { #expect(m.refresh()) }
         let after = try #require(settledFDs())
+        print("FDCOUNT busctlBackend before=\(before) after=\(after) refreshes=\(calls)")
         #expect(after - before <= slack, "fd count grew from \(before) to \(after) over \(calls) refreshes")
     }
 
