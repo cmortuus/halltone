@@ -25,7 +25,7 @@ printf 'Origin: Halltone\nSuite: stable\nCodename: stable\nArchitectures: %s\nCo
 
 make_deb() {  # version
   local d; d=$(mktemp -d); mkdir -p "$d/DEBIAN" "$d/usr/bin"
-  printf 'Package: halltone-linux\nVersion: %s\nArchitecture: %s\nMaintainer: ci <ci@example.invalid>\nDescription: stub of halltone-linux for installer tests\n' "$1" "$ARCH" > "$d/DEBIAN/control"
+  printf 'Package: halltone-linux\nVersion: %s\nArchitecture: %s\nSection: sound\nPriority: optional\nMaintainer: ci <ci@example.invalid>\nDescription: stub of halltone-linux for installer tests\n' "$1" "$ARCH" > "$d/DEBIAN/control"
   printf '#!/bin/sh\necho "halltone-linux %s"\n' "$1" > "$d/usr/bin/halltone-linux"; chmod 755 "$d/usr/bin/halltone-linux"
   dpkg-deb --build "$d" "$W/halltone-linux_$1_$ARCH.deb" >/dev/null
   reprepro -b "$W/www/halltone" includedeb stable "$W/halltone-linux_$1_$ARCH.deb" >/dev/null

@@ -73,7 +73,7 @@ if [ "$big" = 413 ]; then ok "over 5 MB rejected"; else fail "over-limit upload 
 
 echo "### release importer"
 rm -rf "$FAKE"; mkdir -p "$FAKE/pkg/DEBIAN" "$FAKE/pkg/usr/bin" "$FAKE/web"
-printf 'Package: halltone-linux\nVersion: 1.2.3\nArchitecture: amd64\nMaintainer: ci <ci@example.invalid>\nDescription: stub for importer test\n' > "$FAKE/pkg/DEBIAN/control"
+printf 'Package: halltone-linux\nVersion: 1.2.3\nArchitecture: amd64\nSection: sound\nPriority: optional\nMaintainer: ci <ci@example.invalid>\nDescription: stub for importer test\n' > "$FAKE/pkg/DEBIAN/control"
 printf '#!/bin/sh\necho stub\n' > "$FAKE/pkg/usr/bin/halltone-linux"; chmod 755 "$FAKE/pkg/usr/bin/halltone-linux"
 dpkg-deb --build "$FAKE/pkg" "$FAKE/web/halltone-linux_1.2.3_amd64.deb" >/dev/null
 cp "$FAKE/web/halltone-linux_1.2.3_amd64.deb" "$FAKE/web/halltone-linux_9.9.9_amd64.deb"
