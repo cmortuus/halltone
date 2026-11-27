@@ -21,9 +21,11 @@ import Glibc
         for _ in 0..<50 {   // a long-lived child that is stopped, as AppStreamCapture does
             let s = try Spawn.start("/bin/sleep", ["30"], captureStdout: true, captureStderr: false)
             s.process.terminate()
+            Thread.sleep(forTimeInterval: 0.05)
+            if s.process.isRunning { kill(s.process.processIdentifier, SIGKILL) }   // as CommandRunner does
             let deadline = Date().addingTimeInterval(5)
             _ = Spawn.drain(try #require(s.stdout), shouldStop: { Date() > deadline })
-            #expect(Date() < deadline, "no EOF after the child was terminated")
+            #expect(Date() < deadline, "no EOF after the child was killed")
             if s.process.isRunning { kill(s.process.processIdentifier, SIGKILL) }
         }
         for _ in 0..<50 { #expect((try? Spawn.start("/nonexistent/program", [], captureStdout: true, captureStderr: true)) == nil) }
