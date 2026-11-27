@@ -1,0 +1,7 @@
+[Unit]
+Description=Check Halltone main for new commits to build every 5 minutes
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=5min
+[Install]
+WantedBy=timers.target

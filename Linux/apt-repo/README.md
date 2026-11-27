@@ -23,6 +23,9 @@ GitHub release linux-v*            desktop (Ubuntu)
 | Signing key, user `repo`, no passphrase | `/var/lib/repo/.gnupg` |
 | Public key served to clients | `/srv/apt/halltone/halltone-archive-keyring.{gpg,asc}` |
 | Importer + timer | `/usr/local/bin/halltone-repo-sync`, `halltone-repo-sync.timer` |
+| main builder + timer (5 min) | `/usr/local/bin/halltone-build-main` (user `builder`, checkout `/var/lib/halltone-build/src`), `halltone-build.timer` |
+| main build importer | `/usr/local/bin/halltone-build-import` (user `repo`, runs after each successful build) |
+| Swift toolchain (same release as CI) | `/opt/swift` |
 | Log receiver | `/usr/local/bin/halltone-logrx`, `halltone-logrx.service` (user `halltonelog`) |
 | Log token (shared secret) | `/etc/halltone-logrx/token` (root:halltonelog 0640) |
 | Installer template, launcher, publisher | `/usr/local/share/halltone/`, `/usr/local/bin/halltone-publish-installer` |
@@ -32,6 +35,23 @@ GitHub release linux-v*            desktop (Ubuntu)
 Files here: `server/setup.sh` (the one script), `server/halltone-repo-sync`, `server/halltone-logrx`,
 `server/halltone-publish-installer`, `server/systemd/*`, `server/nginx/apt.conf`,
 `server/install-halltone.desktop`, `test/*` (CI). The installer itself is `../install-halltone.sh`.
+
+## Builds from main
+
+Besides importing tagged releases, the server builds every new commit on `main` itself (amd64 only), so a
+merged fix reaches clients within ~5 minutes plus the build (~2-4 min, incremental) without a tag:
+
+* `halltone-build.timer` runs `halltone-build-main` as user `builder`: fetch `main`, and for a commit not built
+  yet run `Linux/packaging/build-deb.sh` with version `<last linux-v tag>+git<N>.<sha>` (e.g. `0.1.3+git2.1cf2b1b`).
+  That sorts above the tag and below the next one, so a release still wins. A commit that *is* a tag is skipped:
+  its GitHub release (amd64 + arm64) comes in through `halltone-repo-sync` as before.
+* On success `halltone-build-import` (user `repo`, the only one with the signing key) signs the outbox .deb in.
+  Both importers share `/var/lib/repo/reprepro.lock`. An older release imported after a newer main build is
+  skipped by reprepro (exit 0), so it never blocks the release importer.
+* Logs: `journalctl -u halltone-build -u halltone-build-import`. Build by hand:
+  `sudo runuser -u builder -- /usr/local/bin/halltone-build-main && sudo systemctl start halltone-build-import`.
+* The container needs ~4 GB RAM and ~20 GB disk for this (CT 114: 4 cores, 4096 MB + 2048 MB swap, 20 G rootfs).
+  arm64 clients only get tagged releases.
 
 ## Deploying / updating (existing server)
 
@@ -57,8 +77,8 @@ the placeholder), `systemctl is-active nginx halltone-logrx halltone-repo-sync.t
 
    ```bash
    pct create 114 local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst \
-     --hostname apt --cores 1 --memory 512 --swap 256 \
-     --rootfs local-lvm:8 --net0 name=eth0,bridge=vmbr0,ip=dhcp \
+     --hostname apt --cores 4 --memory 4096 --swap 2048 \
+     --rootfs local-lvm:20 --net0 name=eth0,bridge=vmbr0,ip=dhcp \
      --unprivileged 1 --onboot 1 --features nesting=1
    pct start 114
    ```

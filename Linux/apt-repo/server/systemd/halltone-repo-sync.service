@@ -5,4 +5,4 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=repo
-ExecStart=/usr/local/bin/halltone-repo-sync
+ExecStart=/usr/bin/flock /var/lib/repo/reprepro.lock /usr/local/bin/halltone-repo-sync

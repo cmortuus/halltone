@@ -1,0 +1,11 @@
+[Unit]
+Description=Build new Halltone main commits into the apt repo (amd64)
+After=network-online.target
+Wants=network-online.target
+OnSuccess=halltone-build-import.service
+[Service]
+Type=oneshot
+User=builder
+Nice=10
+TimeoutStartSec=1h
+ExecStart=/usr/local/bin/halltone-build-main

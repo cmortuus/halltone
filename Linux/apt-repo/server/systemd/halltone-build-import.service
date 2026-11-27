@@ -1,0 +1,7 @@
+[Unit]
+Description=Sign Halltone main builds into the apt repo
+[Service]
+Type=oneshot
+User=repo
+# Shared with halltone-repo-sync: reprepro fails rather than waits on its own lock.
+ExecStart=/usr/bin/flock /var/lib/repo/reprepro.lock /usr/local/bin/halltone-build-import

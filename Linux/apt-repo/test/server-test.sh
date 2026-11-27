@@ -6,6 +6,7 @@ set -euo pipefail
 export LC_ALL=C.UTF-8
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SETUP="$HERE/../server/setup.sh"
+export HALLTONE_SKIP_SWIFT=1   # no 900 MB toolchain in CI; the build path is tested with a stub below
 FAKE=/tmp/fake-releases
 ok()   { printf 'ok   - %s\n' "$*"; }
 fail() { printf 'FAIL - %s\n' "$*" >&2; exit 1; }
@@ -98,4 +99,47 @@ grep -q 'halltone-linux 1.2.3' /tmp/list.out && ! grep -q 9.9.9 /tmp/list.out &&
 curl -fsS $base/halltone/dists/stable/main/binary-amd64/Packages | grep -q '^Version: 1.2.3' && ok "Packages index served"
 n=$(sync_run 2>&1 | grep -c 'imported' || true)
 if [ "$n" = 0 ]; then ok "re-running the importer imports nothing twice"; else fail "importer re-imported ($n)"; fi
+
+echo "### main builder + importer (stub build-deb.sh, local git remote)"
+G=/tmp/gitremote; rm -rf "$G"; mkdir -p "$G/Linux/packaging"
+cat > "$G/Linux/packaging/build-deb.sh" <<'STUB'
+#!/bin/bash
+# Stand-in for the real build-deb.sh: a stub .deb with the requested version.
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd); d=$(mktemp -d); mkdir -p "$d/DEBIAN" "$here/out"
+printf 'Package: halltone-linux\nVersion: %s\nArchitecture: %s\nSection: sound\nPriority: optional\nMaintainer: ci <ci@example.invalid>\nDescription: stub\n' "$1" "$2" > "$d/DEBIAN/control"
+dpkg-deb --build "$d" "$here/out/halltone-linux_$1_$2.deb" >/dev/null
+STUB
+chmod 755 "$G/Linux/packaging/build-deb.sh"
+git -C "$G" init -q -b main; git -C "$G" -c user.name=ci -c user.email=ci@example.invalid commit -q --allow-empty -m one
+git -C "$G" add -A; git -C "$G" -c user.name=ci -c user.email=ci@example.invalid commit -q -m stub
+git -C "$G" -c user.name=ci -c user.email=ci@example.invalid tag -a linux-v1.2.3 -m 1.2.3
+chmod -R a+rX "$G"
+build_run() { runuser -u builder -- env HOME=/var/lib/halltone-build HALLTONE_GIT_REMOTE="$G" /usr/local/bin/halltone-build-main; }
+import_run() { runuser -u repo -- flock /var/lib/repo/reprepro.lock /usr/local/bin/halltone-build-import; }
+git_safe() { runuser -u builder -- env HOME=/var/lib/halltone-build git config --global --add safe.directory "$G/.git"; }
+git_safe
+build_run | tee /tmp/build1.out
+grep -q 'is linux-v1.2.3' /tmp/build1.out || fail "tagged commit was not skipped"
+[ -z "$(ls /var/lib/halltone-build/outbox)" ] || fail "tagged commit produced a build"
+ok "tagged commit skipped (its GitHub release is imported instead)"
+git -C "$G" -c user.name=ci -c user.email=ci@example.invalid commit -q --allow-empty -m two
+short=$(git -C "$G" rev-parse --short=7 HEAD)
+build_run | tee /tmp/build2.out
+want="1.2.3+git1.$short"
+[ -f "/var/lib/halltone-build/outbox/halltone-linux_${want}_amd64.deb" ] || fail "no outbox .deb for $want"
+ok "new main commit built as $want"
+import_run | tee /tmp/import1.out
+[ -z "$(ls /var/lib/halltone-build/outbox)" ] || fail "importer left the outbox non-empty"
+curl -fsS $base/halltone/dists/stable/main/binary-amd64/Packages | grep -qx "Version: $want" || fail "Packages does not serve $want"
+ok "main build signed into the repo and served"
+build_run | tee /tmp/build3.out
+if [ -n "$(ls /var/lib/halltone-build/outbox)" ] || [ -s /tmp/build3.out ]; then fail "same commit built twice"; fi
+ok "same commit not rebuilt"
+# A GitHub release import of an older version than a main build must not fail (halltone-repo-sync
+# runs under set -e and would retry the release forever).
+runuser -u repo -- env GNUPGHOME=/var/lib/repo/.gnupg reprepro -b /srv/apt/halltone includedeb stable "$FAKE/web/halltone-linux_1.2.3_amd64.deb" \
+  || fail "reprepro failed importing a version older than the main build"
+curl -fsS $base/halltone/dists/stable/main/binary-amd64/Packages | grep -qx "Version: $want" || fail "older release replaced the main build"
+ok "older release import is a no-op, main build stays"
 echo "ALL SERVER TESTS PASSED"
