@@ -18,9 +18,13 @@ public struct SourceConfig: Codable, Equatable {
 extension LatencyMode {
     /// The mode a source plays in: an explicit pick wins; otherwise Auto, or Game when the sender
     /// uses 2.5 ms frames (its own Game mode: a game stream wants the game buffer).
-    public static func resolve(choice: LatencyMode?, frameSamples: Int) -> LatencyMode {
+    ///
+    /// `slowOutput` (Bluetooth: over ~80 ms of output latency) makes the default Lowest instead of
+    /// Game: a 15 ms buffer is pointless in front of 160 ms of headphones, and all risk.
+    public static func resolve(choice: LatencyMode?, frameSamples: Int, slowOutput: Bool = false) -> LatencyMode {
         if let choice { return choice }
-        return frameSamples == Constants.pcmGameFrameSamples ? .game : .auto
+        guard frameSamples == Constants.pcmGameFrameSamples else { return .auto }
+        return slowOutput ? .lowest : .game
     }
 }
 

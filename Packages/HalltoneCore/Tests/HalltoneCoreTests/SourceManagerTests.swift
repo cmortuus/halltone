@@ -182,6 +182,23 @@ struct SourceManagerTests {
         m.disconnectAll()
     }
 
+    /// Bluetooth (A2DP ~160 ms): Game's tiny buffer is pointless, so a Game-frames source defaults
+    /// to Lowest, and an explicit Game is kept but flagged (it buffers like Lowest).
+    @Test func slowOutputDefaultsGameFramesToLowest() {
+        let (m, _, _) = make()
+        let a = add(m, "a")
+        status(a, in: m, frameSamples: 120)
+        #expect(a.effectiveMode == .game && !a.gameIsPointless)
+        m.slowOutput = true
+        #expect(a.effectiveMode == .lowest && !a.gameIsPointless)
+        m.setLatency(.game, for: "a")
+        #expect(a.effectiveMode == .game && a.gameIsPointless)
+        m.slowOutput = false
+        #expect(!a.gameIsPointless)
+        #expect(LatencyMode.resolve(choice: nil, frameSamples: 240, slowOutput: true) == .auto)
+        m.disconnectAll()
+    }
+
     // MARK: media source
 
     @Test func mediaSourceIsTheOneWithControlsThatStartedPlayingLast() {

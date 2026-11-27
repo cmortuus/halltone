@@ -35,6 +35,18 @@ public final class JitterBuffer {
         /// Packets that arrive after their play time (3 in a second) raise the target. Off in
         /// Game mode, where the packets that follow a concealed gap arrive "late" by design.
         public var raiseOnLate = true
+        /// Game mode's escape hatch. Concealing instead of waiting is only worth it while gaps are
+        /// rare: when `backoffBursts` separate concealment bursts land within
+        /// `backoffWindowSeconds` (0 = never), the buffer backs off to Lowest-like behavior: it
+        /// stops concealing and waits for packets (their content is kept), and the target may
+        /// grow past `maxTargetMs` up to `backoffMaxTargetMs`, sized to the gaps actually seen
+        /// (plus `backoffGapMarginMs`). It returns to normal `backoffHoldSeconds` after the last
+        /// gap longer than `maxTargetMs`, once the target has decayed back under that ceiling.
+        public var backoffBursts = 0
+        public var backoffWindowSeconds: Double = 5
+        public var backoffMaxTargetMs: Double = 250
+        public var backoffGapMarginMs: Double = 15
+        public var backoffHoldSeconds: Double = 60
         /// The decode pump keeps at least this much decoded ahead of the render callback (0 = just
         /// one callback plus one frame), and may grow that slack by up to `maxExtraDecodedAheadMs`
         /// when the render side runs dry while packets are queued (the pump was late).
@@ -86,6 +98,9 @@ public final class JitterBuffer {
         public var received: UInt64 = 0
         public var lost: UInt64 = 0
         public var late: UInt64 = 0
+        /// Late packets whose slot had already been concealed (the Wi-Fi hole ended after we gave
+        /// up on it). Not loss: the packet did arrive.
+        public var lateConcealed: UInt64 = 0
         public var duplicates: UInt64 = 0
         public var underruns: UInt64 = 0
         public var driftDrops: UInt64 = 0
@@ -121,6 +136,23 @@ public final class JitterBuffer {
     private var lastGapUpdate: TimeInterval = 0
     private var lastFastDrop: TimeInterval = 0
     private var lockGrowUntil: TimeInterval = 0
+    // Game-mode backoff (see `Config.backoffBursts`).
+    private var backedOffState = false
+    private var concealBurstTimes: [TimeInterval] = []
+    private var lastConcealTime: TimeInterval = -1
+    private var lastLongGapTime: TimeInterval = 0
+    /// Largest recent arrival gap beyond `maxTargetMs` (decaying), remembered so a backoff can
+    /// size the target to it. Only tracked when backoff is enabled.
+    private var longGapPeakMs: Double = 0
+    /// End position of the furthest concealed frame: a packet below it arrived late *because* we
+    /// concealed.
+    private var concealedEnd: UInt64 = 0
+
+    /// Game mode has backed off to Lowest-like buffering after too many concealment bursts.
+    public var isBackedOff: Bool { backedOffState }
+    private var ceilingMs: Double { backedOffState ? max(config.maxTargetMs, config.backoffMaxTargetMs) : config.maxTargetMs }
+    private var gapMargin: Double { backedOffState ? max(config.gapMarginMs, config.backoffGapMarginMs) : config.gapMarginMs }
+    private var halfLife: Double { backedOffState ? max(config.gapHalfLifeSeconds, 20) : config.gapHalfLifeSeconds }
 
     /// Largest recent gap between packet arrivals (decaying), in ms.
     public var recentGapMs: Double { gapPeakMs }
@@ -153,6 +185,7 @@ public final class JitterBuffer {
                 self.session = session
             } else if samplePos < expectedPos {
                 stats.late += 1
+                if samplePos < concealedEnd { stats.lateConcealed += 1 }
                 noteLate(now: now)
                 return
             }
@@ -202,12 +235,14 @@ public final class JitterBuffer {
             }
         }
 
-        if queue.isEmpty, config.concealGaps, playoutAhead < concealBelow,
+        if queue.isEmpty, config.concealGaps, !backedOffState, playoutAhead < concealBelow,
            Double(concealedRun) < config.maxConcealMs * config.sampleRate / 1000 {
             let pos = expectedPos
             expectedPos += frame
             concealedRun += config.frameSamples
             stats.lost += 1
+            concealedEnd = max(concealedEnd, pos + frame)
+            noteConceal(now: now)
             lastEmitTime = now
             return .conceal(pos: pos, next: nil)
         }
@@ -287,6 +322,8 @@ public final class JitterBuffer {
         let pos = expectedPos
         expectedPos += frame
         stats.lost += 1
+        concealedEnd = max(concealedEnd, pos + frame)
+        noteConceal(now: now)
         let next = head.pos == expectedPos ? head.payload : nil
         return .conceal(pos: pos, next: next)
     }
@@ -316,6 +353,9 @@ public final class JitterBuffer {
         c.frameSamples = config.frameSamples
         config = c
         gapPeakMs = 0
+        longGapPeakMs = 0
+        backedOffState = false
+        concealBurstTimes.removeAll()
         setTarget(ms: c.initialTargetMs)
         reset(now: now)
     }
@@ -327,6 +367,8 @@ public final class JitterBuffer {
         var c = new
         c.frameSamples = config.frameSamples
         config = c
+        backedOffState = false
+        concealBurstTimes.removeAll()
         setTarget(ms: max(c.initialTargetMs, min(c.maxTargetMs, gapPeakMs + c.gapMarginMs)))
         lastUnderrunTime = now // hold off lowering for a while
     }
@@ -353,11 +395,15 @@ public final class JitterBuffer {
     }
 
     private func maybeLowerTarget(now: TimeInterval) {
+        if backedOffState, now - lastLongGapTime >= config.backoffHoldSeconds, stats.targetMs <= config.maxTargetMs {
+            backedOffState = false
+            concealBurstTimes.removeAll()
+        }
         guard now - lastUnderrunTime >= config.lowerAfterSeconds,
               now - lastLowerTime >= config.lowerAfterSeconds,
               now - startedTime >= config.lowerAfterSeconds else { return }
         decayGapPeak(now: now)
-        let floor = gapPeakMs + config.gapMarginMs
+        let floor = gapPeakMs + gapMargin
         let lowered = max(stats.targetMs - config.lowerStepMs, floor)
         if lowered < stats.targetMs { setTarget(ms: lowered) }
         lastLowerTime = now
@@ -374,19 +420,40 @@ public final class JitterBuffer {
         // gaps longer than the ceiling: no allowed target could cover them, and counting them
         // pinned the target at the ceiling for minutes. (A locked iPhone's Wi-Fi goes silent for
         // ~0.5 s every minute or two, e.g. scanning for access points.)
-        guard gapMs < config.stallResetSeconds * 1000, gapMs <= config.maxTargetMs else { return }
+        if config.backoffBursts > 0, gapMs > config.maxTargetMs, gapMs <= config.backoffMaxTargetMs {
+            longGapPeakMs = max(longGapPeakMs, gapMs)
+            if backedOffState { lastLongGapTime = now }
+        }
+        guard gapMs < config.stallResetSeconds * 1000, gapMs <= ceilingMs else { return }
         if gapMs > gapPeakMs { gapPeakMs = gapMs }
-        let wanted = min(config.maxTargetMs, gapPeakMs + config.gapMarginMs)
+        let wanted = min(ceilingMs, gapPeakMs + gapMargin)
         if wanted > stats.targetMs {
             setTarget(ms: wanted)
             lastUnderrunTime = now // hold off lowering for a while
         }
     }
 
+    /// A concealment burst is a run of consecutive concealed frames. Game mode conceals a short
+    /// fade per gap instead of buffering; several bursts in a few seconds is a buzz, so back off.
+    private func noteConceal(now: TimeInterval) {
+        defer { lastConcealTime = now }
+        guard config.backoffBursts > 0, !backedOffState, now - lastConcealTime > 0.015 else { return }
+        concealBurstTimes.append(now)
+        concealBurstTimes.removeAll { now - $0 > config.backoffWindowSeconds }
+        guard concealBurstTimes.count >= config.backoffBursts else { return }
+        backedOffState = true
+        lastLongGapTime = now
+        decayGapPeak(now: now)
+        gapPeakMs = max(gapPeakMs, min(longGapPeakMs, config.backoffMaxTargetMs))
+        setTarget(ms: max(stats.targetMs, gapPeakMs + gapMargin))
+        lastUnderrunTime = now
+    }
+
     private func decayGapPeak(now: TimeInterval) {
         let dt = now - lastGapUpdate
         guard dt > 0 else { return }
-        gapPeakMs *= pow(0.5, dt / config.gapHalfLifeSeconds)
+        gapPeakMs *= pow(0.5, dt / halfLife)
+        longGapPeakMs *= pow(0.5, dt / halfLife)
         lastGapUpdate = now
     }
 
@@ -409,7 +476,7 @@ public final class JitterBuffer {
     }
 
     private func setTarget(ms: Double) {
-        let clamped = min(max(config.maxTargetMs, lockFloorMs), max(config.minTargetMs, lockFloorMs, ms))
+        let clamped = min(max(ceilingMs, lockFloorMs), max(config.minTargetMs, lockFloorMs, ms))
         stats.targetMs = clamped
         targetSamples = Int(clamped * config.sampleRate / 1000)
     }
@@ -485,6 +552,7 @@ extension JitterBuffer.Config {
             c.catchUpMarginMs = 20
             c.catchUpInterval = 0.02
             c.concealGaps = true
+            c.backoffBursts = 3
             c.maxConcealMs = 120
             c.raiseOnLate = false
             c.minDecodedAheadMs = 0

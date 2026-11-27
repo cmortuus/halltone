@@ -39,8 +39,12 @@ public final class Source {
     public var isActive: Bool { stats.state.isActive }
     /// What this source plays in: the user's pick, else Auto, or Game for 2.5 ms frames.
     public var effectiveMode: LatencyMode {
-        LatencyMode.resolve(choice: config.latency, frameSamples: stats.frameSamples)
+        LatencyMode.resolve(choice: config.latency, frameSamples: stats.frameSamples, slowOutput: slowOutput)
     }
+    /// The output adds a lot of delay of its own (Bluetooth), set by the manager.
+    public internal(set) var slowOutput = false
+    /// The user picked Game but the output is Bluetooth: it buffers like Lowest (and the app says so).
+    public var gameIsPointless: Bool { slowOutput && effectiveMode == .game }
 
     func notePlaying(_ playing: Bool, at now: TimeInterval) {
         guard !playingKnown || playing != stats.macPlaying else { return }
@@ -70,6 +74,12 @@ public final class SourceManager {
     public var deviceID: String? { didSet { sources.forEach { $0.receiver.deviceID = deviceID } } }
     /// False while the app is paused (headphones out): applies to every source.
     public var listening = true { didSet { sources.forEach { $0.receiver.listening = listening } } }
+    /// The output route adds this much latency or more (Bluetooth A2DP is ~160 ms): Game mode
+    /// can't help, so sources default to Lowest and an explicit Game buffers like Lowest.
+    public static let slowOutputMs = 80
+    public var slowOutput = false {
+        didSet { sources.forEach { $0.slowOutput = slowOutput; $0.receiver.slowOutput = slowOutput } }
+    }
     public var screenLocked = false { didSet { sources.forEach { $0.receiver.screenLocked = screenLocked } } }
     public var holdHeadphones = false { didSet { sources.forEach { $0.receiver.holdHeadphones = holdHeadphones } } }
 
@@ -118,6 +128,8 @@ public final class SourceManager {
         receiver.deviceID = deviceID
         receiver.listening = listening
         receiver.screenLocked = screenLocked
+        source.slowOutput = slowOutput
+        receiver.slowOutput = slowOutput
         receiver.holdHeadphones = holdHeadphones
         wire(source)
         sources.append(source)
